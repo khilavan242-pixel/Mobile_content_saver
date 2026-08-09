@@ -1,11 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 1. The Permissions you just pasted (Required for Android 16) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
 
-    <!-- 2. The Application tag (Updated for v2 embedding) -->
     <application
         android:label="homework_companion"
         android:name="${applicationName}" 
@@ -30,7 +28,7 @@
             </intent-filter>
         </activity>
 
-        <!-- 3. The required v2 embedding line to stop the build crash -->
+        <!-- THIS IS THE EXACT LINE FLUTTER IS LOOKING FOR -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
