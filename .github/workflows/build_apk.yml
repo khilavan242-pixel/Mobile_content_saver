@@ -5,7 +5,7 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch: 
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Setup Java 17 (Required for modern Gradle/Android builds)
+      # 2. Setup Java 17
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -30,24 +30,28 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # 4. Fetch Dependencies
+      # 4. THE FIX: Auto-Repair the Android Environment
+      - name: Auto-Repair Android Folders
+        run: |
+          rm -rf android
+          flutter create --platforms android .
+
+      # 5. THE FIX: Auto-Inject Storage Permissions
+      - name: Inject Android Permissions
+        run: |
+          sed -i 's/<application/<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"\/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"\/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"\/>\n    <application/g' android/app/src/main/AndroidManifest.xml
+
+      # 6. Fetch Dependencies
       - name: Install dependencies
         run: flutter pub get
-        # If your app code is inside a subfolder (e.g. tv_app), add:
-        # working-directory: tv_app
 
-      # 5. Build Release APK
+      # 7. Build Release APK
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
-        # If your app code is inside a subfolder (e.g. tv_app), add:
-        # working-directory: tv_app
 
-      # 6. Upload Built APK as Artifact
+      # 8. Upload Built APK
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
           path: build/app/outputs/flutter-apk/app-release.apk
-          # If in a subfolder like tv_app, change path to:
-          # path: tv_app/build/app/outputs/flutter-apk/app-release.apk
-
