@@ -1,3 +1,13 @@
+name: homework_companion
+description: A new Flutter project.
+publish_to: 'none'
+version: 1.0.0+1
+
+# THIS IS THE FIX FOR THE GITHUB ERROR:
+environment:
+  sdk: '^3.12.0'
+
+# THESE ARE YOUR PERFECT DEPENDENCIES:
 dependencies:
   flutter:
     sdk: flutter
@@ -9,4 +19,3 @@ dependencies:
   pasteboard: ^0.2.2
   # To safely find the Documents folder on Android
   path_provider: ^2.1.2
-
