@@ -18,7 +18,7 @@ class HomeworkCompanionApp extends StatelessWidget {
       title: 'Homework Companion',
       theme: ThemeData(
         primarySwatch: Colors.blue,
-        brightness: Brightness.dark, // Clean dark mode for mobile
+        brightness: Brightness.dark, 
       ),
       home: const GeneratorScreen(),
     );
@@ -33,31 +33,169 @@ class GeneratorScreen extends StatefulWidget {
 }
 
 class _GeneratorScreenState extends State<GeneratorScreen> {
-  // --- Form State ---
+  // --- Dynamic Form State ---
+  List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
   String _selectedSubject = 'English';
-  final List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
   
-  String _fileType = 'quiz'; // 'quiz', 'concept', or 'image'
+  List<String> _fileTypes = ['quiz', 'concept', 'image'];
+  String _selectedFileType = 'quiz'; 
   
   final TextEditingController _chapterCtrl = TextEditingController(text: '1');
   final TextEditingController _fileNumCtrl = TextEditingController(text: '1');
   final TextEditingController _customNameCtrl = TextEditingController();
   final TextEditingController _textContentCtrl = TextEditingController();
 
-  Uint8List? _imageBytes; // Holds the image if gallery/clipboard is used
+  Uint8List? _imageBytes; 
   final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
-    _requestPermissions();
+    _initializeApp();
   }
 
-  // --- Core Android 11+ Permission Request ---
-  Future<void> _requestPermissions() async {
+  // --- Core Permissions & Startup ---
+  Future<void> _initializeApp() async {
     if (!await Permission.manageExternalStorage.isGranted) {
       await Permission.manageExternalStorage.request();
     }
+    if (await Permission.manageExternalStorage.isGranted) {
+      await _loadCustomData();
+    }
+  }
+
+  // --- Unified Save/Load Logic ---
+  Future<void> _loadCustomData() async {
+    try {
+      final dir = Directory('/storage/emulated/0/Documents/Homework');
+      if (!await dir.exists()) await dir.create(recursive: true);
+
+      // Load Subjects
+      final subFile = File('${dir.path}/saved_subjects.txt');
+      if (await subFile.exists()) {
+        final subLines = await subFile.readAsLines();
+        if (subLines.isNotEmpty) _subjects = subLines;
+      }
+
+      // Load File Types
+      final typeFile = File('${dir.path}/saved_types.txt');
+      if (await typeFile.exists()) {
+        final typeLines = await typeFile.readAsLines();
+        if (typeLines.isNotEmpty) _fileTypes = typeLines;
+      }
+
+      setState(() {
+        if (!_subjects.contains(_selectedSubject)) _selectedSubject = _subjects.first;
+        if (!_fileTypes.contains(_selectedFileType)) _selectedFileType = _fileTypes.first;
+      });
+    } catch (e) {
+      debugPrint("Error loading data: $e");
+    }
+  }
+
+  Future<void> _saveDataList(List<String> list, String fileName) async {
+    try {
+      final file = File('/storage/emulated/0/Documents/Homework/$fileName');
+      await file.writeAsString(list.join('\n'));
+    } catch (e) {
+      _showSnackBar("Error saving list: $e");
+    }
+  }
+
+  // --- Subject Management ---
+  void _showAddSubjectDialog() {
+    TextEditingController newSubjectCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Add New Subject"),
+        content: TextField(
+          controller: newSubjectCtrl,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(hintText: "e.g. Hindi, GK", border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              String newSub = newSubjectCtrl.text.trim();
+              if (newSub.isNotEmpty && !_subjects.contains(newSub)) {
+                setState(() {
+                  _subjects.add(newSub);
+                  _selectedSubject = newSub; 
+                });
+                _saveDataList(_subjects, 'saved_subjects.txt'); 
+              }
+              Navigator.pop(context);
+            }, 
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            child: const Text("Add", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _deleteCurrentSubject() {
+    if (_subjects.length <= 1) {
+      _showSnackBar("You must have at least one subject!");
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Delete Subject?"),
+        content: Text("Remove '$_selectedSubject' from your list?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                _subjects.remove(_selectedSubject);
+                _selectedSubject = _subjects.first;
+              });
+              _saveDataList(_subjects, 'saved_subjects.txt');
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text("Delete", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- File Type Management ---
+  void _showAddTypeDialog() {
+    TextEditingController newTypeCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Add New File Type"),
+        content: TextField(
+          controller: newTypeCtrl,
+          decoration: const InputDecoration(hintText: "e.g. worksheet, summary", border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              String newType = newTypeCtrl.text.trim().toLowerCase().replaceAll(' ', '_');
+              if (newType.isNotEmpty && !_fileTypes.contains(newType)) {
+                setState(() {
+                  _fileTypes.add(newType);
+                  _selectedFileType = newType; 
+                });
+                _saveDataList(_fileTypes, 'saved_types.txt'); 
+              }
+              Navigator.pop(context);
+            }, 
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            child: const Text("Add", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   // --- Image Handling ---
@@ -80,18 +218,17 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 
   // --- Logic & Saving ---
   String _buildFilePath() {
-    String chapter = "ch${_chapterCtrl.text.padLeft(2, '0')}"; // Forces ch01
-    String type = _fileType;
+    String chapter = "ch${_chapterCtrl.text.padLeft(2, '0')}"; 
+    String type = _selectedFileType;
     String num = _fileNumCtrl.text;
     
-    // Format custom name (replace spaces with underscores)
     String customName = _customNameCtrl.text.trim();
     String suffix = customName.isNotEmpty ? "_${customName.replaceAll(' ', '_')}" : "";
     
-    String extension = type == 'quiz' ? '.json' : (type == 'concept' ? '.txt' : '.jpg');
+    // Default any new custom type to a .txt file, keeping quiz as .json and image as .jpg
+    String extension = type == 'quiz' ? '.json' : (type == 'image' ? '.jpg' : '.txt');
     String fileName = "${chapter}_${type}_${num}$suffix$extension".toLowerCase();
     
-    // The exact mobile path for Documents/Homework
     String dirPath = "/storage/emulated/0/Documents/Homework/$_selectedSubject";
     return "$dirPath/$fileName";
   }
@@ -99,14 +236,13 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   Future<void> _handleSave() async {
     if (!await Permission.manageExternalStorage.isGranted) {
       _showSnackBar("Storage permission is required to save files.");
-      await _requestPermissions();
+      await Permission.manageExternalStorage.request();
       return;
     }
 
     String fullPath = _buildFilePath();
     File targetFile = File(fullPath);
 
-    // Safety Check: Overwrite Warning
     if (await targetFile.exists()) {
       bool? overwrite = await showDialog<bool>(
         context: context,
@@ -122,13 +258,11 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
       if (overwrite != true) return;
     }
 
-    // Ensure the folder exists
     Directory dir = Directory(fullPath.substring(0, fullPath.lastIndexOf('/')));
     if (!await dir.exists()) await dir.create(recursive: true);
 
-    // Write the data
     try {
-      if (_fileType == 'image') {
+      if (_selectedFileType == 'image') {
         if (_imageBytes == null) {
           _showSnackBar("Please select or paste an image first!");
           return;
@@ -141,9 +275,8 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
         }
         await targetFile.writeAsString(_textContentCtrl.text);
       }
-      _showSnackBar("✅ Saved successfully to ${_selectedSubject} folder!", success: true);
+      _showSnackBar("✅ Saved successfully to $_selectedSubject folder!", success: true);
       
-      // Optional: Clear form after save
       _textContentCtrl.clear();
       setState(() => _imageBytes = null);
       
@@ -170,16 +303,39 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Subject Dropdown
-            DropdownButtonFormField<String>(
-              value: _selectedSubject,
-              decoration: const InputDecoration(labelText: "Subject Folder", border: OutlineInputBorder()),
-              items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-              onChanged: (val) => setState(() => _selectedSubject = val!),
+            // --- SUBJECT ROW WITH ADD AND DELETE BUTTONS ---
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _selectedSubject,
+                    decoration: const InputDecoration(labelText: "Subject Folder", border: OutlineInputBorder()),
+                    items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+                    onChanged: (val) => setState(() => _selectedSubject = val!),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: _showAddSubjectDialog,
+                  child: Container(
+                    height: 60, width: 50,
+                    decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blueAccent)),
+                    child: const Icon(Icons.add, color: Colors.blueAccent),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: _deleteCurrentSubject,
+                  child: Container(
+                    height: 60, width: 50,
+                    decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.redAccent)),
+                    child: const Icon(Icons.delete, color: Colors.redAccent),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 15),
 
-            // Number Inputs Row
             Row(
               children: [
                 Expanded(
@@ -201,32 +357,35 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             ),
             const SizedBox(height: 15),
 
-            // Optional Name
             TextField(
               controller: _customNameCtrl,
               decoration: const InputDecoration(labelText: "Custom Name (Optional)", hintText: "e.g. My Family", border: OutlineInputBorder()),
             ),
             const SizedBox(height: 20),
 
-            // File Type Selector
+            // --- DYNAMIC FILE TYPE ROW WITH ADD BUTTON ---
             const Text("File Type:", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            Wrap(
+              spacing: 10,
+              runSpacing: 5,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _buildRadio("Quiz", 'quiz'),
-                _buildRadio("Concept", 'concept'),
-                _buildRadio("Image", 'image'),
+                ..._fileTypes.map((t) => _buildRadio(t.toUpperCase(), t)).toList(),
+                TextButton.icon(
+                  onPressed: _showAddTypeDialog, 
+                  icon: const Icon(Icons.add_circle, color: Colors.blueAccent),
+                  label: const Text("New Type", style: TextStyle(color: Colors.blueAccent)),
+                )
               ],
             ),
             const SizedBox(height: 20),
 
-            // Smart Input Area (Changes based on selection)
-            if (_fileType != 'image')
+            if (_selectedFileType != 'image')
               TextField(
                 controller: _textContentCtrl,
                 maxLines: 8,
                 decoration: InputDecoration(
-                  labelText: "Paste ${_fileType.toUpperCase()} Content Here",
+                  labelText: "Paste ${_selectedFileType.toUpperCase()} Content Here",
                   border: const OutlineInputBorder(),
                   alignLabelWithHint: true,
                 ),
@@ -255,7 +414,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             
             const SizedBox(height: 30),
 
-            // Save Button
             SizedBox(
               height: 60,
               child: ElevatedButton(
@@ -272,19 +430,19 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 
   Widget _buildRadio(String label, String value) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Radio<String>(
           value: value,
-          groupValue: _fileType,
+          groupValue: _selectedFileType,
           onChanged: (val) => setState(() {
-            _fileType = val!;
+            _selectedFileType = val!;
             _textContentCtrl.clear();
             _imageBytes = null;
           }),
         ),
-        Text(label),
+        Text(label, style: const TextStyle(fontSize: 14)),
       ],
     );
   }
 }
-
