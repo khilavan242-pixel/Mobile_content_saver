@@ -26,7 +26,7 @@ dependencies:
   path_provider: ^2.1.2
 
   # NEW: To allow the user to pick their custom save folder
-  file_picker: ^8.0.3
+  file_picker: any
 
   # NEW: To permanently remember the folder the user chose
   shared_preferences: ^2.2.3
