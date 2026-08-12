@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:convert'; // Required for saving prompts
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -36,7 +37,7 @@ class GeneratorScreen extends StatefulWidget {
 }
 
 class _GeneratorScreenState extends State<GeneratorScreen> {
-  String? _basePath; // This will hold your custom chosen folder
+  String? _basePath; 
 
   // --- Dynamic Form State ---
   List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
@@ -331,7 +332,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   // --- UI Layout ---
   @override
   Widget build(BuildContext context) {
-    // Show setup screen if folder is not picked yet
     if (_basePath == null) {
       return Scaffold(
         appBar: AppBar(title: const Text("Setup Required"), centerTitle: true),
@@ -364,19 +364,29 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
       );
     }
 
-    // Normal App Layout
     return Scaffold(
       appBar: AppBar(
         title: const Text("Homework Generator"),
         centerTitle: true,
         actions: [
-          // Folder picker button (to change folder later)
+          // Prompt Manager Button (NEW)
+          IconButton(
+            icon: const Icon(Icons.smart_toy, color: Colors.greenAccent),
+            tooltip: "AI Prompts",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const PromptManagerScreen()),
+              );
+            },
+          ),
+          // Folder picker button
           IconButton(
             icon: const Icon(Icons.folder, color: Colors.white70),
             tooltip: "Change Save Folder",
             onPressed: _pickBaseFolder,
           ),
-          // TV button passing the dynamically picked folder path
+          // TV Manager button
           IconButton(
             icon: const Icon(Icons.tv, color: Colors.blueAccent),
             tooltip: "Kodi TV Manager",
@@ -394,7 +404,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // --- SUBJECT ROW WITH ADD AND DELETE BUTTONS ---
             Row(
               children: [
                 Expanded(
@@ -454,7 +463,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             ),
             const SizedBox(height: 20),
 
-            // --- DYNAMIC FILE TYPE ROW WITH ADD BUTTON ---
             const Text("File Type:", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             Wrap(
               spacing: 10,
@@ -542,11 +550,163 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 }
 
 // ============================================================================
+// NEW FEATURE: PROMPT MANAGER FOR AI
+// ============================================================================
+
+class PromptManagerScreen extends StatefulWidget {
+  const PromptManagerScreen({Key? key}) : super(key: key);
+
+  @override
+  _PromptManagerScreenState createState() => _PromptManagerScreenState();
+}
+
+class _PromptManagerScreenState extends State<PromptManagerScreen> {
+  // Map of Prompt Name -> Prompt Content
+  Map<String, String> _prompts = {};
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadPrompts();
+  }
+
+  Future<void> _loadPrompts() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    String? promptsJson = prefs.getString('saved_ai_prompts');
+    if (promptsJson != null) {
+      setState(() {
+        _prompts = Map<String, String>.from(jsonDecode(promptsJson));
+      });
+    }
+  }
+
+  Future<void> _savePrompts() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_ai_prompts', jsonEncode(_prompts));
+  }
+
+  void _showAddPromptDialog() {
+    TextEditingController nameCtrl = TextEditingController();
+    TextEditingController contentCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Save New AI Prompt"),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: "Prompt Name", hintText: "e.g., Kodi Video Builder", border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 15),
+              TextField(
+                controller: contentCtrl,
+                maxLines: 5,
+                decoration: const InputDecoration(labelText: "Prompt Text", hintText: "Paste the full prompt here...", border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              String name = nameCtrl.text.trim();
+              String content = contentCtrl.text.trim();
+              
+              if (name.isNotEmpty && content.isNotEmpty) {
+                setState(() {
+                  _prompts[name] = content;
+                });
+                _savePrompts();
+                Navigator.pop(context);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            child: const Text("Save Prompt", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _copyToClipboard(String content, String name) {
+    Clipboard.setData(ClipboardData(text: content));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("✅ '$name' copied to clipboard! Ready to paste to ChatGPT."),
+      backgroundColor: Colors.green,
+    ));
+  }
+
+  void _deletePrompt(String name) {
+    setState(() {
+      _prompts.remove(name);
+    });
+    _savePrompts();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("AI Prompts Manager")),
+      body: _prompts.isEmpty
+          ? const Center(child: Text("No prompts saved yet.\nTap the + button to add one!", textAlign: TextAlign.center))
+          : ListView.builder(
+              padding: const EdgeInsets.all(15),
+              itemCount: _prompts.length,
+              itemBuilder: (context, index) {
+                String key = _prompts.keys.elementAt(index);
+                String content = _prompts[key]!;
+
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: ExpansionTile(
+                    title: Text(key, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                    subtitle: const Text("Tap to view content or copy", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(15.0),
+                        child: Text(content, style: const TextStyle(color: Colors.white70)),
+                      ),
+                      ButtonBar(
+                        alignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => _deletePrompt(key),
+                            icon: const Icon(Icons.delete, color: Colors.redAccent),
+                            label: const Text("Delete", style: TextStyle(color: Colors.redAccent)),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () => _copyToClipboard(content, key),
+                            icon: const Icon(Icons.copy, color: Colors.white),
+                            label: const Text("Copy Prompt", style: TextStyle(color: Colors.white)),
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
+                );
+              },
+            ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showAddPromptDialog,
+        backgroundColor: Colors.green,
+        child: const Icon(Icons.add, color: Colors.white),
+      ),
+    );
+  }
+}
+
+// ============================================================================
 // KODI TV PLAYLIST MANAGER
 // ============================================================================
 
 class KodiTvScreen extends StatefulWidget {
-  final String basePath; // Receives the chosen folder path from the main screen
+  final String basePath;
 
   const KodiTvScreen({Key? key, required this.basePath}) : super(key: key);
 
@@ -730,3 +890,4 @@ plugin://plugin.video.youtube/play/?video_id=$videoId
     );
   }
 }
+
