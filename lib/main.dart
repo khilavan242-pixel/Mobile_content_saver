@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // Added for Clipboard
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:pasteboard/pasteboard.dart';
@@ -18,7 +19,7 @@ class HomeworkCompanionApp extends StatelessWidget {
       title: 'Homework Companion',
       theme: ThemeData(
         primarySwatch: Colors.blue,
-        brightness: Brightness.dark, 
+        brightness: Brightness.dark,
       ),
       home: const GeneratorScreen(),
     );
@@ -36,16 +37,16 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   // --- Dynamic Form State ---
   List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
   String _selectedSubject = 'English';
-  
+
   List<String> _fileTypes = ['quiz', 'concept', 'image'];
-  String _selectedFileType = 'quiz'; 
-  
+  String _selectedFileType = 'quiz';
+
   final TextEditingController _chapterCtrl = TextEditingController(text: '1');
   final TextEditingController _fileNumCtrl = TextEditingController(text: '1');
   final TextEditingController _customNameCtrl = TextEditingController();
   final TextEditingController _textContentCtrl = TextEditingController();
 
-  Uint8List? _imageBytes; 
+  Uint8List? _imageBytes;
   final ImagePicker _picker = ImagePicker();
 
   @override
@@ -122,12 +123,12 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
               if (newSub.isNotEmpty && !_subjects.contains(newSub)) {
                 setState(() {
                   _subjects.add(newSub);
-                  _selectedSubject = newSub; 
+                  _selectedSubject = newSub;
                 });
-                _saveDataList(_subjects, 'saved_subjects.txt'); 
+                _saveDataList(_subjects, 'saved_subjects.txt');
               }
               Navigator.pop(context);
-            }, 
+            },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
             child: const Text("Add", style: TextStyle(color: Colors.white)),
           ),
@@ -184,12 +185,12 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
               if (newType.isNotEmpty && !_fileTypes.contains(newType)) {
                 setState(() {
                   _fileTypes.add(newType);
-                  _selectedFileType = newType; 
+                  _selectedFileType = newType;
                 });
-                _saveDataList(_fileTypes, 'saved_types.txt'); 
+                _saveDataList(_fileTypes, 'saved_types.txt');
               }
               Navigator.pop(context);
-            }, 
+            },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
             child: const Text("Add", style: TextStyle(color: Colors.white)),
           ),
@@ -218,17 +219,16 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 
   // --- Logic & Saving ---
   String _buildFilePath() {
-    String chapter = "ch${_chapterCtrl.text.padLeft(2, '0')}"; 
+    String chapter = "ch${_chapterCtrl.text.padLeft(2, '0')}";
     String type = _selectedFileType;
     String num = _fileNumCtrl.text;
-    
+
     String customName = _customNameCtrl.text.trim();
     String suffix = customName.isNotEmpty ? "_${customName.replaceAll(' ', '_')}" : "";
-    
-    // Default any new custom type to a .txt file, keeping quiz as .json and image as .jpg
+
     String extension = type == 'quiz' ? '.json' : (type == 'image' ? '.jpg' : '.txt');
     String fileName = "${chapter}_${type}_${num}$suffix$extension".toLowerCase();
-    
+
     String dirPath = "/storage/emulated/0/Documents/Homework/$_selectedSubject";
     return "$dirPath/$fileName";
   }
@@ -276,10 +276,10 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
         await targetFile.writeAsString(_textContentCtrl.text);
       }
       _showSnackBar("✅ Saved successfully to $_selectedSubject folder!", success: true);
-      
+
       _textContentCtrl.clear();
       setState(() => _imageBytes = null);
-      
+
     } catch (e) {
       _showSnackBar("Error saving file: $e");
     }
@@ -297,7 +297,23 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Homework Generator"), centerTitle: true),
+      appBar: AppBar(
+        title: const Text("Homework Generator"),
+        centerTitle: true,
+        actions: [
+          // NEW: Button to open the Kodi TV Playlist Manager
+          IconButton(
+            icon: const Icon(Icons.tv, color: Colors.blueAccent),
+            tooltip: "Kodi TV Manager",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const KodiTvScreen()),
+              );
+            },
+          )
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -372,7 +388,7 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
               children: [
                 ..._fileTypes.map((t) => _buildRadio(t.toUpperCase(), t)).toList(),
                 TextButton.icon(
-                  onPressed: _showAddTypeDialog, 
+                  onPressed: _showAddTypeDialog,
                   icon: const Icon(Icons.add_circle, color: Colors.blueAccent),
                   label: const Text("New Type", style: TextStyle(color: Colors.blueAccent)),
                 )
@@ -405,13 +421,13 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
                     height: 200,
                     width: double.infinity,
                     decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(10)),
-                    child: _imageBytes == null 
-                        ? const Center(child: Text("No Image Selected")) 
+                    child: _imageBytes == null
+                        ? const Center(child: Text("No Image Selected"))
                         : ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.memory(_imageBytes!, fit: BoxFit.cover)),
                   ),
                 ],
               ),
-            
+
             const SizedBox(height: 30),
 
             SizedBox(
@@ -446,3 +462,198 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     );
   }
 }
+
+// ============================================================================
+// NEW FEATURE: KODI TV PLAYLIST MANAGER
+// ============================================================================
+
+class KodiTvScreen extends StatefulWidget {
+  const KodiTvScreen({Key? key}) : super(key: key);
+
+  @override
+  _KodiTvScreenState createState() => _KodiTvScreenState();
+}
+
+class _KodiTvScreenState extends State<KodiTvScreen> {
+  final TextEditingController _urlCtrl = TextEditingController();
+  
+  // The Child Profile logic we discussed
+  List<String> _children = ['Lakshya', 'Child 2'];
+  String _selectedChild = 'Lakshya';
+
+  // We pull subjects from your existing app data
+  List<String> _subjects = ['English', 'Math']; 
+  String _selectedSubject = 'English';
+
+  final String m3uPath = '/storage/emulated/0/Documents/Homework/Master_Playlist.m3u';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSubjects();
+  }
+
+  Future<void> _loadSubjects() async {
+    try {
+      final subFile = File('/storage/emulated/0/Documents/Homework/saved_subjects.txt');
+      if (await subFile.exists()) {
+        final subLines = await subFile.readAsLines();
+        if (subLines.isNotEmpty) {
+          setState(() {
+            _subjects = subLines;
+            _selectedSubject = _subjects.first;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error loading subjects: $e");
+    }
+  }
+
+  // Extracts YouTube ID using Regex
+  String? _extractYouTubeId(String url) {
+    final RegExp regExp = RegExp(
+      r'(?<=watch\?v=|/videos/|embed/|youtu.be/|/v/|/e/|watch\?v%3D|watch\?feature=player_embedded&v=|%2Fvideos%2F|embed%2F|youtu.be%2F|%2Fv%2F)[^#\&\?\n]*',
+      caseSensitive: false,
+      multiLine: false,
+    );
+    final match = regExp.firstMatch(url);
+    return match?.group(0);
+  }
+
+  Future<void> _saveToKodi() async {
+    String url = _urlCtrl.text.trim();
+    if (url.isEmpty) {
+      _showSnackBar("Please enter a YouTube link!");
+      return;
+    }
+
+    String? videoId = _extractYouTubeId(url);
+    if (videoId == null || videoId.length < 10) {
+      _showSnackBar("Invalid YouTube Link!");
+      return;
+    }
+
+    File m3uFile = File(m3uPath);
+    
+    // Duplicate Scanner Logic
+    if (await m3uFile.exists()) {
+      String content = await m3uFile.readAsString();
+      if (content.contains(videoId)) {
+        _showSnackBar("Duplicate! Video already on TV.", success: false);
+        return;
+      }
+    } else {
+      // First time setup: Write the #EXTM3U tag
+      await m3uFile.writeAsString("#EXTM3U\n\n");
+    }
+
+    // Build the Kodi String
+    String groupTitle = "$_selectedChild - $_selectedSubject";
+    String kodiCode = '''
+#EXTINF:-1 group-title="$groupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $_selectedSubject Lesson
+plugin://plugin.video.youtube/play/?video_id=$videoId
+''';
+
+    // Append to file
+    try {
+      await m3uFile.writeAsString("$kodiCode\n", mode: FileMode.append);
+      _showSnackBar("✅ Saved to Kodi TV!", success: true);
+      _urlCtrl.clear();
+    } catch (e) {
+      _showSnackBar("Error saving: $e");
+    }
+  }
+
+  Future<void> _pasteUrl() async {
+    ClipboardData? data = await Clipboard.getData('text/plain');
+    if (data != null && data.text != null) {
+      setState(() {
+        _urlCtrl.text = data.text!;
+      });
+    }
+  }
+
+  void _showSnackBar(String message, {bool success = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      backgroundColor: success ? Colors.green : Colors.redAccent,
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Kodi TV Manager")),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text("Child Profile:", style: TextStyle(fontWeight: FontWeight.bold)),
+            DropdownButtonFormField<String>(
+              value: _selectedChild,
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+              items: _children.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              onChanged: (val) => setState(() => _selectedChild = val!),
+            ),
+            const SizedBox(height: 20),
+
+            const Text("Subject (Group Title):", style: TextStyle(fontWeight: FontWeight.bold)),
+            DropdownButtonFormField<String>(
+              value: _selectedSubject,
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+              items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+              onChanged: (val) => setState(() => _selectedSubject = val!),
+            ),
+            const SizedBox(height: 20),
+
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _urlCtrl,
+                    decoration: const InputDecoration(
+                      labelText: "YouTube Link", 
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                ElevatedButton.icon(
+                  onPressed: _pasteUrl, 
+                  icon: const Icon(Icons.paste), 
+                  label: const Text("Paste"),
+                  style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 15))
+                ),
+              ],
+            ),
+            
+            const SizedBox(height: 30),
+
+            SizedBox(
+              height: 60,
+              child: ElevatedButton(
+                onPressed: _saveToKodi,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent, 
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
+                ),
+                child: const Text("Build & Save to TV", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            Text(
+              "Saving to: $m3uPath", 
+              style: const TextStyle(color: Colors.grey, fontSize: 12),
+              textAlign: TextAlign.center,
+            )
+          ],
+        ),
+      ),
+    );
+  }
+}
+
