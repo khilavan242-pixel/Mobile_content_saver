@@ -19,11 +19,17 @@ dependencies:
   # To pick images from the phone's gallery
   image_picker: ^1.0.7
   
-  # To paste images directly from the mobile clipboard (Fixed version)
+  # To paste images directly from the mobile clipboard
   pasteboard: ^0.5.0
   
   # To safely find the Documents folder on Android
   path_provider: ^2.1.2
+
+  # NEW: To allow the user to pick their custom save folder
+  file_picker: ^8.0.3
+
+  # NEW: To permanently remember the folder the user chose
+  shared_preferences: ^2.2.3
 
 dev_dependencies:
   flutter_test:
