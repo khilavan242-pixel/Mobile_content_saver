@@ -1,10 +1,12 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Added for Clipboard
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:pasteboard/pasteboard.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const HomeworkCompanionApp());
@@ -34,6 +36,8 @@ class GeneratorScreen extends StatefulWidget {
 }
 
 class _GeneratorScreenState extends State<GeneratorScreen> {
+  String? _basePath; // This will hold your custom chosen folder
+
   // --- Dynamic Form State ---
   List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
   String _selectedSubject = 'English';
@@ -55,20 +59,45 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     _initializeApp();
   }
 
-  // --- Core Permissions & Startup ---
+  // --- Core Permissions & Folder Setup ---
   Future<void> _initializeApp() async {
     if (!await Permission.manageExternalStorage.isGranted) {
       await Permission.manageExternalStorage.request();
     }
+    
     if (await Permission.manageExternalStorage.isGranted) {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      String? savedPath = prefs.getString('saved_base_path');
+
+      if (savedPath != null) {
+        setState(() {
+          _basePath = savedPath;
+        });
+        await _loadCustomData();
+      }
+    }
+  }
+
+  Future<void> _pickBaseFolder() async {
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
+
+    if (selectedDirectory != null) {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setString('saved_base_path', selectedDirectory);
+      
+      setState(() {
+        _basePath = selectedDirectory;
+      });
       await _loadCustomData();
     }
   }
 
   // --- Unified Save/Load Logic ---
   Future<void> _loadCustomData() async {
+    if (_basePath == null) return;
+
     try {
-      final dir = Directory('/storage/emulated/0/Documents/Homework');
+      final dir = Directory(_basePath!);
       if (!await dir.exists()) await dir.create(recursive: true);
 
       // Load Subjects
@@ -95,8 +124,9 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   }
 
   Future<void> _saveDataList(List<String> list, String fileName) async {
+    if (_basePath == null) return;
     try {
-      final file = File('/storage/emulated/0/Documents/Homework/$fileName');
+      final file = File('$_basePath/$fileName');
       await file.writeAsString(list.join('\n'));
     } catch (e) {
       _showSnackBar("Error saving list: $e");
@@ -229,11 +259,16 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     String extension = type == 'quiz' ? '.json' : (type == 'image' ? '.jpg' : '.txt');
     String fileName = "${chapter}_${type}_${num}$suffix$extension".toLowerCase();
 
-    String dirPath = "/storage/emulated/0/Documents/Homework/$_selectedSubject";
+    String dirPath = "$_basePath/$_selectedSubject";
     return "$dirPath/$fileName";
   }
 
   Future<void> _handleSave() async {
+    if (_basePath == null) {
+      _showSnackBar("Please select a base folder first.");
+      return;
+    }
+
     if (!await Permission.manageExternalStorage.isGranted) {
       _showSnackBar("Storage permission is required to save files.");
       await Permission.manageExternalStorage.request();
@@ -296,19 +331,59 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   // --- UI Layout ---
   @override
   Widget build(BuildContext context) {
+    // Show setup screen if folder is not picked yet
+    if (_basePath == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Setup Required"), centerTitle: true),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.folder_special, size: 80, color: Colors.blueAccent),
+                const SizedBox(height: 20),
+                const Text(
+                  "Where do you want to save your Homework and TV Playlist files?",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 18),
+                ),
+                const SizedBox(height: 30),
+                ElevatedButton(
+                  onPressed: _pickBaseFolder,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20)
+                  ),
+                  child: const Text("Choose Folder", style: TextStyle(fontSize: 20, color: Colors.white)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Normal App Layout
     return Scaffold(
       appBar: AppBar(
         title: const Text("Homework Generator"),
         centerTitle: true,
         actions: [
-          // NEW: Button to open the Kodi TV Playlist Manager
+          // Folder picker button (to change folder later)
+          IconButton(
+            icon: const Icon(Icons.folder, color: Colors.white70),
+            tooltip: "Change Save Folder",
+            onPressed: _pickBaseFolder,
+          ),
+          // TV button passing the dynamically picked folder path
           IconButton(
             icon: const Icon(Icons.tv, color: Colors.blueAccent),
             tooltip: "Kodi TV Manager",
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const KodiTvScreen()),
+                MaterialPageRoute(builder: (context) => KodiTvScreen(basePath: _basePath!)),
               );
             },
           )
@@ -438,6 +513,9 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
                 child: const Text("Generate & Save File", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ),
+            
+            const SizedBox(height: 10),
+            Text("Saving to: $_basePath", style: const TextStyle(fontSize: 10, color: Colors.grey), textAlign: TextAlign.center),
           ],
         ),
       ),
@@ -464,11 +542,13 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 }
 
 // ============================================================================
-// NEW FEATURE: KODI TV PLAYLIST MANAGER
+// KODI TV PLAYLIST MANAGER
 // ============================================================================
 
 class KodiTvScreen extends StatefulWidget {
-  const KodiTvScreen({Key? key}) : super(key: key);
+  final String basePath; // Receives the chosen folder path from the main screen
+
+  const KodiTvScreen({Key? key, required this.basePath}) : super(key: key);
 
   @override
   _KodiTvScreenState createState() => _KodiTvScreenState();
@@ -477,25 +557,24 @@ class KodiTvScreen extends StatefulWidget {
 class _KodiTvScreenState extends State<KodiTvScreen> {
   final TextEditingController _urlCtrl = TextEditingController();
   
-  // The Child Profile logic we discussed
   List<String> _children = ['Lakshya', 'Child 2'];
   String _selectedChild = 'Lakshya';
 
-  // We pull subjects from your existing app data
   List<String> _subjects = ['English', 'Math']; 
   String _selectedSubject = 'English';
 
-  final String m3uPath = '/storage/emulated/0/Documents/Homework/Master_Playlist.m3u';
+  late String m3uPath;
 
   @override
   void initState() {
     super.initState();
+    m3uPath = '${widget.basePath}/Master_Playlist.m3u';
     _loadSubjects();
   }
 
   Future<void> _loadSubjects() async {
     try {
-      final subFile = File('/storage/emulated/0/Documents/Homework/saved_subjects.txt');
+      final subFile = File('${widget.basePath}/saved_subjects.txt');
       if (await subFile.exists()) {
         final subLines = await subFile.readAsLines();
         if (subLines.isNotEmpty) {
@@ -510,7 +589,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
     }
   }
 
-  // Extracts YouTube ID using Regex
   String? _extractYouTubeId(String url) {
     final RegExp regExp = RegExp(
       r'(?<=watch\?v=|/videos/|embed/|youtu.be/|/v/|/e/|watch\?v%3D|watch\?feature=player_embedded&v=|%2Fvideos%2F|embed%2F|youtu.be%2F|%2Fv%2F)[^#\&\?\n]*',
@@ -536,7 +614,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
 
     File m3uFile = File(m3uPath);
     
-    // Duplicate Scanner Logic
     if (await m3uFile.exists()) {
       String content = await m3uFile.readAsString();
       if (content.contains(videoId)) {
@@ -544,18 +621,15 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
         return;
       }
     } else {
-      // First time setup: Write the #EXTM3U tag
       await m3uFile.writeAsString("#EXTM3U\n\n");
     }
 
-    // Build the Kodi String
     String groupTitle = "$_selectedChild - $_selectedSubject";
     String kodiCode = '''
 #EXTINF:-1 group-title="$groupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $_selectedSubject Lesson
 plugin://plugin.video.youtube/play/?video_id=$videoId
 ''';
 
-    // Append to file
     try {
       await m3uFile.writeAsString("$kodiCode\n", mode: FileMode.append);
       _showSnackBar("✅ Saved to Kodi TV!", success: true);
@@ -656,4 +730,3 @@ plugin://plugin.video.youtube/play/?video_id=$videoId
     );
   }
 }
-
