@@ -58,3 +58,17 @@ android {
 flutter {
     source '../..'
 }
+
+// ====================================================================
+// THE NUCLEAR OPTION: Force all plugins to API 36 after they load
+// ====================================================================
+gradle.projectsEvaluated {
+    rootProject.allprojects { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileSdkVersion 36
+                compileSdk 36
+            }
+        }
+    }
+}
