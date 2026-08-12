@@ -24,14 +24,3 @@ plugins {
 }
 
 include ":app"
-
-// FORCE ALL PLUGINS TO ANDROID 36 BEFORE THEY EVALUATE
-gradle.allprojects {
-    afterEvaluate { project ->
-        if (project.hasProperty('android')) {
-            project.android {
-                compileSdk 36
-            }
-        }
-    }
-}
