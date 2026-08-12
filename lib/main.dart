@@ -80,7 +80,7 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
   }
 
   Future<void> _pickBaseFolder() async {
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
+    String? selectedDirectory = await FilePicker.getDirectoryPath();
 
     if (selectedDirectory != null) {
       SharedPreferences prefs = await SharedPreferences.getInstance();
