@@ -58,3 +58,13 @@ android {
 flutter {
     source '../..'
 }
+// FORCE ALL PLUGINS (LIKE FILE_PICKER) TO USE ANDROID 36
+rootProject.subprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileSdk 36
+            }
+        }
+    }
+}
