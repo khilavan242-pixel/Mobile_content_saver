@@ -10,26 +10,18 @@ dependencies:
   flutter:
     sdk: flutter
   
-  # Standard Flutter icons
   cupertino_icons: ^1.0.6
-
-  # To request mobile storage permissions
   permission_handler: ^11.3.0 
-  
-  # To pick images from the phone's gallery
   image_picker: ^1.0.7
-  
-  # To paste images directly from the mobile clipboard
   pasteboard: ^0.5.0
-  
-  # To safely find the Documents folder on Android
   path_provider: ^2.1.2
-
-  # NEW: To allow the user to pick their custom save folder
   file_picker: ^8.0.3
-
-  # NEW: To permanently remember the folder the user chose
   shared_preferences: ^2.2.3
+
+# THE FIX: Force the hidden lifecycle plugin to stay on an older version
+# that supports Android 34 so it stops fighting with file_picker!
+dependency_overrides:
+  flutter_plugin_android_lifecycle: 2.0.17
 
 dev_dependencies:
   flutter_test:
