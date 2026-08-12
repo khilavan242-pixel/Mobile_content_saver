@@ -20,7 +20,7 @@ dependencies:
   image_picker: ^1.0.7
   
   # To paste images directly from the mobile clipboard
-  pasteboard: ^0.5.0
+  pasteboard: any
   
   # To safely find the Documents folder on Android
   path_provider: ^2.1.2
