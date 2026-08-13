@@ -13,15 +13,10 @@ dependencies:
   cupertino_icons: ^1.0.6
   permission_handler: ^11.3.0 
   image_picker: ^1.0.7
-  pasteboard: ^0.5.0
+  pasteboard: any
   path_provider: ^2.1.2
-  file_picker: ^8.0.3
+  file_picker: ^8.1.2
   shared_preferences: ^2.2.3
-
-# THE FIX: Force the hidden lifecycle plugin to stay on an older version
-# that supports Android 34 so it stops fighting with file_picker!
-dependency_overrides:
-  flutter_plugin_android_lifecycle: 2.0.17
 
 dev_dependencies:
   flutter_test:
