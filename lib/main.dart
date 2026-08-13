@@ -379,6 +379,17 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
               );
             },
           ),
+          // NEW FEATURE: Homework File Manager Button
+          IconButton(
+            icon: const Icon(Icons.folder_open, color: Colors.yellowAccent),
+            tooltip: "Manage Saved Files",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => HomeworkFileManagerScreen(basePath: _basePath!, subjects: _subjects)),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.folder, color: Colors.white70),
             tooltip: "Change Save Folder",
@@ -388,6 +399,7 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             icon: const Icon(Icons.tv, color: Colors.blueAccent),
             tooltip: "Kodi TV Manager",
             onPressed: () async {
+              // Wait for TV screen to pop, then reload data to sync Subjects if changed
               await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => KodiTvScreen(basePath: _basePath!)),
@@ -699,7 +711,7 @@ class _PromptManagerScreenState extends State<PromptManagerScreen> {
 }
 
 // ============================================================================
-// KODI TV PLAYLIST MANAGER (Fully Upgraded with ChatGPT Mode)
+// KODI TV PLAYLIST MANAGER
 // ============================================================================
 
 class KodiTvScreen extends StatefulWidget {
@@ -925,7 +937,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     _onProfileOrSubjectChanged();
   }
 
-  // --- THE NEW SUPER-SMART KODI SAVER ---
   Future<void> _saveToKodi() async {
     String rawText = _urlCtrl.text.trim();
     if (rawText.isEmpty) {
@@ -942,9 +953,9 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       await m3uFile.writeAsString("#EXTM3U\n");
     }
 
-    // ==========================================
-    // MODE 2: CHATGPT PRE-FORMATTED M3U PASTE
-    // ==========================================
+    // This completely forces ChatGPT to match the dropdowns!
+    String forcedGroupTitle = "$_selectedChild - $_selectedSubject";
+
     if (rawText.contains('#EXTINF')) {
       List<String> lines = rawText.split('\n');
       String newEntries = "";
@@ -956,16 +967,19 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
           String infoLine = lines[i].trim();
           String urlLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
           
-          // 1. Fix ChatGPT Markdown Bugs (Asterisks replacing underscores)
+          if (infoLine.contains('group-title="')) {
+            infoLine = infoLine.replaceAll(RegExp(r'group-title="[^"]*"'), 'group-title="$forcedGroupTitle"');
+          } else {
+            infoLine = infoLine.replaceFirst('#EXTINF:-1', '#EXTINF:-1 group-title="$forcedGroupTitle"');
+          }
+
           urlLine = urlLine.replaceAll('*', '_');
           infoLine = infoLine.replaceAll('*', '_');
           
-          // 2. Fix ChatGPT Markdown Link Bug inside tvg-logo
           infoLine = infoLine.replaceAllMapped(RegExp(r'tvg-logo="\[(.*?)\]\(.*?\)"'), (match) {
             return 'tvg-logo="${match.group(1)}"';
           });
 
-          // 3. Extract ID to check for duplicates
           RegExp idRegex = RegExp(r'video_id=([a-zA-Z0-9_-]{11})');
           var match = idRegex.firstMatch(urlLine);
           
@@ -976,7 +990,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             } else {
               newEntries += '\n$infoLine\n$urlLine\n';
               addedCount++;
-              existingContent += videoId; // Prevent dupes in same batch
+              existingContent += videoId;
             }
           }
         }
@@ -997,9 +1011,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       return;
     }
 
-    // ==========================================
-    // MODE 1: STANDARD RAW YOUTUBE LINKS
-    // ==========================================
     RegExp regex = RegExp(r'(?:v=|youtu\.be\/|shorts\/|embed\/|video_id=|vi\/)([a-zA-Z0-9_-]{11})');
     Iterable<RegExpMatch> matches = regex.allMatches(rawText);
     List<String> incomingIds = matches.map((m) => m.group(1)!).toSet().toList();
@@ -1030,9 +1041,8 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       }
 
       String finalTitle = chapter.isNotEmpty ? "CH$chapter: $titlePart" : titlePart;
-      String groupTitle = "$_selectedChild - $_selectedSubject";
       
-      newEntries += '\n#EXTINF:-1 group-title="$groupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
+      newEntries += '\n#EXTINF:-1 group-title="$forcedGroupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
       newEntries += 'plugin://plugin.video.youtube/play/?video_id=$videoId\n';
       addedCount++;
     }
@@ -1078,10 +1088,11 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
           IconButton(
             icon: const Icon(Icons.list_alt, color: Colors.orangeAccent),
             tooltip: "Manage Playlist",
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(
+            onPressed: () async {
+              await Navigator.push(context, MaterialPageRoute(
                 builder: (context) => PlaylistManagerScreen(m3uPath: m3uPath, childrenProfiles: _children)
               ));
+              _autoCalculateChapter();
             },
           )
         ],
@@ -1091,7 +1102,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // CHILD PROFILE ROW
             const Text("Child Profile:", style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 5),
             Row(
@@ -1129,7 +1139,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             ),
             const SizedBox(height: 20),
 
-            // SUBJECT ROW (Synced)
             const Text("Subject (Group Title):", style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 5),
             Row(
@@ -1167,7 +1176,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             ),
             const SizedBox(height: 20),
 
-            // CHAPTER AND CUSTOM NAME ROW
             Row(
               children: [
                 Expanded(
@@ -1190,7 +1198,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             ),
             const SizedBox(height: 20),
 
-            // LINK PASTE BOX
             const Text("YouTube Links:", style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 5),
             Row(
@@ -1244,7 +1251,139 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
 }
 
 // ============================================================================
-// PLAYLIST MANAGER (FILTER & DELETE)
+// NEW FEATURE: HOMEWORK FILE MANAGER (Review, Edit, Delete Quizzes & Images)
+// ============================================================================
+class HomeworkFileManagerScreen extends StatefulWidget {
+  final String basePath;
+  final List<String> subjects;
+
+  const HomeworkFileManagerScreen({Key? key, required this.basePath, required this.subjects}) : super(key: key);
+
+  @override
+  _HomeworkFileManagerScreenState createState() => _HomeworkFileManagerScreenState();
+}
+
+class _HomeworkFileManagerScreenState extends State<HomeworkFileManagerScreen> {
+  late String _selectedSubject;
+  List<FileSystemEntity> _files = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedSubject = widget.subjects.isNotEmpty ? widget.subjects.first : '';
+    _loadFiles();
+  }
+
+  Future<void> _loadFiles() async {
+    if (_selectedSubject.isEmpty) return;
+    final dir = Directory('${widget.basePath}/$_selectedSubject');
+    if (await dir.exists()) {
+      setState(() {
+        _files = dir.listSync().where((f) => f is File).toList();
+      });
+    } else {
+      setState(() => _files = []);
+    }
+  }
+
+  void _openFile(File file) async {
+    String ext = file.path.split('.').last.toLowerCase();
+    
+    if (ext == 'jpg' || ext == 'png') {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: Image.file(file),
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
+        ),
+      );
+    } else if (ext == 'txt' || ext == 'json') {
+      String content = await file.readAsString();
+      TextEditingController editorCtrl = TextEditingController(text: content);
+      
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text("Editing: ${file.path.split('/').last}", style: const TextStyle(fontSize: 14)),
+          content: SingleChildScrollView(
+            child: TextField(
+              controller: editorCtrl,
+              maxLines: null,
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+            ElevatedButton(
+              onPressed: () async {
+                await file.writeAsString(editorCtrl.text);
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File updated!"), backgroundColor: Colors.green));
+              },
+              child: const Text("Save Changes"),
+            )
+          ],
+        ),
+      );
+    }
+  }
+
+  Future<void> _deleteFile(File file) async {
+    await file.delete();
+    _loadFiles();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File deleted."), backgroundColor: Colors.redAccent));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Manage Homework Files")),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(15),
+            child: DropdownButtonFormField<String>(
+              value: _selectedSubject,
+              decoration: const InputDecoration(labelText: "Select Subject Folder", border: OutlineInputBorder()),
+              items: widget.subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+              onChanged: (val) {
+                setState(() => _selectedSubject = val!);
+                _loadFiles();
+              },
+            ),
+          ),
+          Expanded(
+            child: _files.isEmpty 
+              ? const Center(child: Text("No files found in this folder."))
+              : ListView.builder(
+                  itemCount: _files.length,
+                  itemBuilder: (context, index) {
+                    File file = _files[index] as File;
+                    String fileName = file.path.split('/').last;
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      child: ListTile(
+                        leading: const Icon(Icons.insert_drive_file, color: Colors.yellowAccent),
+                        title: Text(fileName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: const Text("Tap to view or edit"),
+                        onTap: () => _openFile(file),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () => _deleteFile(file),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// PLAYLIST MANAGER (MULTI-SELECT, BATCH RENAME, AUTO-CHAPTER FIXING)
 // ============================================================================
 class PlaylistManagerScreen extends StatefulWidget {
   final String m3uPath;
@@ -1259,6 +1398,7 @@ class PlaylistManagerScreen extends StatefulWidget {
 class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   String _selectedFilter = 'All';
   List<M3uItem> _playlistItems = [];
+  Set<M3uItem> _selectedItems = {};
 
   @override
   void initState() {
@@ -1291,19 +1431,91 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     setState(() => _playlistItems = items);
   }
 
-  Future<void> _deleteItem(M3uItem itemToDelete) async {
-    _playlistItems.remove(itemToDelete);
-    
+  // --- AUTO CHAPTER CORRECTION LOGIC ---
+  void _reorderChapters(String groupTitle) {
+    int currentChapter = 1;
+    for (var item in _playlistItems) {
+      if (item.groupTitle == groupTitle) {
+        // Find existing clean name by stripping out old CH number
+        String cleanName = item.displayName.replaceFirst(RegExp(r'^CH\d+:\s*'), '').trim();
+        String newName = "CH$currentChapter: $cleanName";
+        
+        item.infoLine = item.infoLine.replaceAll(item.displayName, newName);
+        item.displayName = newName;
+        currentChapter++;
+      }
+    }
+  }
+
+  Future<void> _savePlaylistToFile() async {
     String newContent = "#EXTM3U\n";
     for (var item in _playlistItems) {
       newContent += '\n${item.infoLine}\n${item.urlLine}\n';
     }
+    await File(widget.m3uPath).writeAsString(newContent);
+  }
+
+  Future<void> _deleteSelectedItems() async {
+    Set<String> affectedGroups = _selectedItems.map((e) => e.groupTitle).toSet();
     
-    File m3uFile = File(widget.m3uPath);
-    await m3uFile.writeAsString(newContent);
-    setState(() {});
+    setState(() {
+      _playlistItems.removeWhere((item) => _selectedItems.contains(item));
+      _selectedItems.clear();
+    });
+
+    // Fix chapter numbering for the groups that just had videos deleted!
+    for (String group in affectedGroups) {
+      _reorderChapters(group);
+    }
     
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Video deleted from TV."), backgroundColor: Colors.redAccent));
+    await _savePlaylistToFile();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Videos deleted and chapters auto-corrected!"), backgroundColor: Colors.redAccent));
+  }
+
+  void _showBatchRenameDialog() {
+    List<String> currentGroups = _playlistItems.map((e) => e.groupTitle).toSet().toList();
+    if (currentGroups.isEmpty) return;
+    
+    String newGroupCtrl = currentGroups.first;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text("Move to Category"),
+          content: DropdownButtonFormField<String>(
+            value: newGroupCtrl,
+            isExpanded: true,
+            items: currentGroups.map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
+            onChanged: (val) => setDialogState(() => newGroupCtrl = val!),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+            ElevatedButton(
+              onPressed: () async {
+                Set<String> oldGroups = _selectedItems.map((e) => e.groupTitle).toSet();
+                
+                setState(() {
+                  for (var item in _selectedItems) {
+                    item.infoLine = item.infoLine.replaceAll('group-title="${item.groupTitle}"', 'group-title="$newGroupCtrl"');
+                    item.groupTitle = newGroupCtrl;
+                  }
+                  _selectedItems.clear();
+                });
+
+                for (String oldGroup in oldGroups) _reorderChapters(oldGroup);
+                _reorderChapters(newGroupCtrl);
+
+                await _savePlaylistToFile();
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Videos moved and chapters auto-corrected!"), backgroundColor: Colors.green));
+              },
+              child: const Text("Update Selected"),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1313,7 +1525,13 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
         : _playlistItems.where((item) => item.groupTitle.startsWith(_selectedFilter)).toList();
 
     return Scaffold(
-      appBar: AppBar(title: const Text("Manage TV Videos")),
+      appBar: AppBar(
+        title: Text(_selectedItems.isEmpty ? "Manage TV Videos" : "${_selectedItems.length} Selected"),
+        actions: _selectedItems.isNotEmpty ? [
+          IconButton(icon: const Icon(Icons.edit, color: Colors.blueAccent), tooltip: "Change Category", onPressed: _showBatchRenameDialog),
+          IconButton(icon: const Icon(Icons.delete, color: Colors.red), tooltip: "Delete Selected", onPressed: _deleteSelectedItems),
+        ] : [],
+      ),
       body: Column(
         children: [
           Container(
@@ -1336,14 +1554,30 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
               itemCount: filteredItems.length,
               itemBuilder: (context, index) {
                 var item = filteredItems[index];
+                bool isSelected = _selectedItems.contains(item);
+
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  child: ListTile(
+                  color: isSelected ? Colors.blue.withOpacity(0.2) : null,
+                  child: CheckboxListTile(
+                    value: isSelected,
+                    onChanged: (bool? selected) {
+                      setState(() {
+                        if (selected == true) {
+                          _selectedItems.add(item);
+                        } else {
+                          _selectedItems.remove(item);
+                        }
+                      });
+                    },
                     title: Text(item.displayName, style: const TextStyle(fontWeight: FontWeight.bold)),
                     subtitle: Text(item.groupTitle, style: const TextStyle(color: Colors.orangeAccent)),
-                    trailing: IconButton(
+                    secondary: IconButton(
                       icon: const Icon(Icons.delete, color: Colors.red),
-                      onPressed: () => _deleteItem(item), 
+                      onPressed: () {
+                        setState(() => _selectedItems = {item});
+                        _deleteSelectedItems();
+                      }, 
                     ),
                   ),
                 );
@@ -1358,7 +1592,10 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   Widget _buildTab(String name) {
     bool isSelected = _selectedFilter == name;
     return GestureDetector(
-      onTap: () => setState(() => _selectedFilter = name),
+      onTap: () => setState(() {
+        _selectedFilter = name;
+        _selectedItems.clear(); // Clear selections when changing tabs
+      }),
       child: Container(
         margin: const EdgeInsets.only(right: 10),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -1373,10 +1610,10 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
 }
 
 class M3uItem {
-  final String infoLine;
+  String infoLine;
   final String urlLine;
-  final String groupTitle;
-  final String displayName;
+  String groupTitle;
+  String displayName;
   M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName});
 }
 
