@@ -379,7 +379,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
               );
             },
           ),
-          // NEW FEATURE: Homework File Manager Button
           IconButton(
             icon: const Icon(Icons.folder_open, color: Colors.yellowAccent),
             tooltip: "Manage Saved Files",
@@ -399,7 +398,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             icon: const Icon(Icons.tv, color: Colors.blueAccent),
             tooltip: "Kodi TV Manager",
             onPressed: () async {
-              // Wait for TV screen to pop, then reload data to sync Subjects if changed
               await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => KodiTvScreen(basePath: _basePath!)),
@@ -555,6 +553,138 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
         ),
         Text(label, style: const TextStyle(fontSize: 14)),
       ],
+    );
+  }
+}
+
+// ============================================================================
+// HOMEWORK FILE MANAGER (Review, Edit, Delete Quizzes & Images)
+// ============================================================================
+class HomeworkFileManagerScreen extends StatefulWidget {
+  final String basePath;
+  final List<String> subjects;
+
+  const HomeworkFileManagerScreen({Key? key, required this.basePath, required this.subjects}) : super(key: key);
+
+  @override
+  _HomeworkFileManagerScreenState createState() => _HomeworkFileManagerScreenState();
+}
+
+class _HomeworkFileManagerScreenState extends State<HomeworkFileManagerScreen> {
+  late String _selectedSubject;
+  List<FileSystemEntity> _files = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedSubject = widget.subjects.isNotEmpty ? widget.subjects.first : '';
+    _loadFiles();
+  }
+
+  Future<void> _loadFiles() async {
+    if (_selectedSubject.isEmpty) return;
+    final dir = Directory('${widget.basePath}/$_selectedSubject');
+    if (await dir.exists()) {
+      setState(() {
+        _files = dir.listSync().where((f) => f is File).toList();
+      });
+    } else {
+      setState(() => _files = []);
+    }
+  }
+
+  void _openFile(File file) async {
+    String ext = file.path.split('.').last.toLowerCase();
+    
+    if (ext == 'jpg' || ext == 'png') {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: Image.file(file),
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
+        ),
+      );
+    } else if (ext == 'txt' || ext == 'json') {
+      String content = await file.readAsString();
+      TextEditingController editorCtrl = TextEditingController(text: content);
+      
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text("Editing: ${file.path.split('/').last}", style: const TextStyle(fontSize: 14)),
+          content: SingleChildScrollView(
+            child: TextField(
+              controller: editorCtrl,
+              maxLines: null,
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+            ElevatedButton(
+              onPressed: () async {
+                await file.writeAsString(editorCtrl.text);
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File updated!"), backgroundColor: Colors.green));
+              },
+              child: const Text("Save Changes"),
+            )
+          ],
+        ),
+      );
+    }
+  }
+
+  Future<void> _deleteFile(File file) async {
+    await file.delete();
+    _loadFiles();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File deleted."), backgroundColor: Colors.redAccent));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Manage Homework Files")),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(15),
+            child: DropdownButtonFormField<String>(
+              value: _selectedSubject,
+              decoration: const InputDecoration(labelText: "Select Subject Folder", border: OutlineInputBorder()),
+              items: widget.subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+              onChanged: (val) {
+                setState(() => _selectedSubject = val!);
+                _loadFiles();
+              },
+            ),
+          ),
+          Expanded(
+            child: _files.isEmpty 
+              ? const Center(child: Text("No files found in this folder."))
+              : ListView.builder(
+                  itemCount: _files.length,
+                  itemBuilder: (context, index) {
+                    File file = _files[index] as File;
+                    String fileName = file.path.split('/').last;
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      child: ListTile(
+                        leading: const Icon(Icons.insert_drive_file, color: Colors.yellowAccent),
+                        title: Text(fileName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: const Text("Tap to view or edit"),
+                        onTap: () => _openFile(file),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () => _deleteFile(file),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+          )
+        ],
+      ),
     );
   }
 }
@@ -953,14 +1083,19 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       await m3uFile.writeAsString("#EXTM3U\n");
     }
 
-    // This completely forces ChatGPT to match the dropdowns!
     String forcedGroupTitle = "$_selectedChild - $_selectedSubject";
 
+    // ==========================================
+    // MODE 2: CHATGPT PRE-FORMATTED M3U PASTE
+    // ==========================================
     if (rawText.contains('#EXTINF')) {
       List<String> lines = rawText.split('\n');
       String newEntries = "";
       int addedCount = 0;
       int dupCount = 0;
+      
+      // Load current chapter number from the text box
+      int currentChapter = int.tryParse(_chapterCtrl.text) ?? 1;
 
       for (int i = 0; i < lines.length; i++) {
         if (lines[i].trim().startsWith('#EXTINF')) {
@@ -988,9 +1123,23 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             if (existingContent.contains(videoId)) {
               dupCount++;
             } else {
+              // --- FORCE SMART CHAPTER NUMBERING (Ignores ChatGPT's numbering) ---
+              int commaIndex = infoLine.lastIndexOf(',');
+              if (commaIndex != -1) {
+                  String rawTitle = infoLine.substring(commaIndex + 1).trim();
+                  // Strip out any existing CH prefix ChatGPT might have added
+                  String cleanName = rawTitle.replaceFirst(RegExp(r'^CH\d+:\s*'), '').trim();
+                  // Prepend the app's verified chapter number
+                  String newTitle = _chapterCtrl.text.trim().isNotEmpty ? "CH$currentChapter: $cleanName" : cleanName;
+                  
+                  String beforeComma = infoLine.substring(0, commaIndex);
+                  infoLine = '$beforeComma, $newTitle';
+              }
+
               newEntries += '\n$infoLine\n$urlLine\n';
               addedCount++;
               existingContent += videoId;
+              currentChapter++; // Increment for the next video
             }
           }
         }
@@ -1011,6 +1160,9 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       return;
     }
 
+    // ==========================================
+    // MODE 1: STANDARD RAW YOUTUBE LINKS
+    // ==========================================
     RegExp regex = RegExp(r'(?:v=|youtu\.be\/|shorts\/|embed\/|video_id=|vi\/)([a-zA-Z0-9_-]{11})');
     Iterable<RegExpMatch> matches = regex.allMatches(rawText);
     List<String> incomingIds = matches.map((m) => m.group(1)!).toSet().toList();
@@ -1020,7 +1172,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       return;
     }
 
-    String chapter = _chapterCtrl.text.trim();
+    int currentChapter = int.tryParse(_chapterCtrl.text) ?? 1;
     String customName = _customNameCtrl.text.trim();
     
     int addedCount = 0;
@@ -1040,11 +1192,12 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
         titlePart += " (Part ${i + 1})";
       }
 
-      String finalTitle = chapter.isNotEmpty ? "CH$chapter: $titlePart" : titlePart;
+      String finalTitle = _chapterCtrl.text.trim().isNotEmpty ? "CH$currentChapter: $titlePart" : titlePart;
       
       newEntries += '\n#EXTINF:-1 group-title="$forcedGroupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
       newEntries += 'plugin://plugin.video.youtube/play/?video_id=$videoId\n';
       addedCount++;
+      currentChapter++;
     }
 
     if (addedCount > 0) {
@@ -1245,138 +1398,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             )
           ],
         ),
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// NEW FEATURE: HOMEWORK FILE MANAGER (Review, Edit, Delete Quizzes & Images)
-// ============================================================================
-class HomeworkFileManagerScreen extends StatefulWidget {
-  final String basePath;
-  final List<String> subjects;
-
-  const HomeworkFileManagerScreen({Key? key, required this.basePath, required this.subjects}) : super(key: key);
-
-  @override
-  _HomeworkFileManagerScreenState createState() => _HomeworkFileManagerScreenState();
-}
-
-class _HomeworkFileManagerScreenState extends State<HomeworkFileManagerScreen> {
-  late String _selectedSubject;
-  List<FileSystemEntity> _files = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedSubject = widget.subjects.isNotEmpty ? widget.subjects.first : '';
-    _loadFiles();
-  }
-
-  Future<void> _loadFiles() async {
-    if (_selectedSubject.isEmpty) return;
-    final dir = Directory('${widget.basePath}/$_selectedSubject');
-    if (await dir.exists()) {
-      setState(() {
-        _files = dir.listSync().where((f) => f is File).toList();
-      });
-    } else {
-      setState(() => _files = []);
-    }
-  }
-
-  void _openFile(File file) async {
-    String ext = file.path.split('.').last.toLowerCase();
-    
-    if (ext == 'jpg' || ext == 'png') {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          content: Image.file(file),
-          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
-        ),
-      );
-    } else if (ext == 'txt' || ext == 'json') {
-      String content = await file.readAsString();
-      TextEditingController editorCtrl = TextEditingController(text: content);
-      
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text("Editing: ${file.path.split('/').last}", style: const TextStyle(fontSize: 14)),
-          content: SingleChildScrollView(
-            child: TextField(
-              controller: editorCtrl,
-              maxLines: null,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-            ElevatedButton(
-              onPressed: () async {
-                await file.writeAsString(editorCtrl.text);
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File updated!"), backgroundColor: Colors.green));
-              },
-              child: const Text("Save Changes"),
-            )
-          ],
-        ),
-      );
-    }
-  }
-
-  Future<void> _deleteFile(File file) async {
-    await file.delete();
-    _loadFiles();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File deleted."), backgroundColor: Colors.redAccent));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Manage Homework Files")),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(15),
-            child: DropdownButtonFormField<String>(
-              value: _selectedSubject,
-              decoration: const InputDecoration(labelText: "Select Subject Folder", border: OutlineInputBorder()),
-              items: widget.subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-              onChanged: (val) {
-                setState(() => _selectedSubject = val!);
-                _loadFiles();
-              },
-            ),
-          ),
-          Expanded(
-            child: _files.isEmpty 
-              ? const Center(child: Text("No files found in this folder."))
-              : ListView.builder(
-                  itemCount: _files.length,
-                  itemBuilder: (context, index) {
-                    File file = _files[index] as File;
-                    String fileName = file.path.split('/').last;
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      child: ListTile(
-                        leading: const Icon(Icons.insert_drive_file, color: Colors.yellowAccent),
-                        title: Text(fileName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: const Text("Tap to view or edit"),
-                        onTap: () => _openFile(file),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () => _deleteFile(file),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-          )
-        ],
       ),
     );
   }
