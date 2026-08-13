@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:convert'; // Required for saving prompts
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -369,7 +369,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
         title: const Text("Homework Generator"),
         centerTitle: true,
         actions: [
-          // Prompt Manager Button (NEW)
           IconButton(
             icon: const Icon(Icons.smart_toy, color: Colors.greenAccent),
             tooltip: "AI Prompts",
@@ -380,21 +379,21 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
               );
             },
           ),
-          // Folder picker button
           IconButton(
             icon: const Icon(Icons.folder, color: Colors.white70),
             tooltip: "Change Save Folder",
             onPressed: _pickBaseFolder,
           ),
-          // TV Manager button
           IconButton(
             icon: const Icon(Icons.tv, color: Colors.blueAccent),
             tooltip: "Kodi TV Manager",
-            onPressed: () {
-              Navigator.push(
+            onPressed: () async {
+              // Wait for TV screen to pop, then reload data to sync Subjects if changed
+              await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => KodiTvScreen(basePath: _basePath!)),
               );
+              _loadCustomData();
             },
           )
         ],
@@ -550,7 +549,7 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 }
 
 // ============================================================================
-// NEW FEATURE: PROMPT MANAGER FOR AI
+// PROMPT MANAGER FOR AI
 // ============================================================================
 
 class PromptManagerScreen extends StatefulWidget {
@@ -561,7 +560,6 @@ class PromptManagerScreen extends StatefulWidget {
 }
 
 class _PromptManagerScreenState extends State<PromptManagerScreen> {
-  // Map of Prompt Name -> Prompt Content
   Map<String, String> _prompts = {};
   
   @override
@@ -636,7 +634,7 @@ class _PromptManagerScreenState extends State<PromptManagerScreen> {
   void _copyToClipboard(String content, String name) {
     Clipboard.setData(ClipboardData(text: content));
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("✅ '$name' copied to clipboard! Ready to paste to ChatGPT."),
+      content: Text("✅ '$name' copied to clipboard!"),
       backgroundColor: Colors.green,
     ));
   }
@@ -702,7 +700,7 @@ class _PromptManagerScreenState extends State<PromptManagerScreen> {
 }
 
 // ============================================================================
-// KODI TV PLAYLIST MANAGER
+// KODI TV PLAYLIST MANAGER (Fully Upgraded)
 // ============================================================================
 
 class KodiTvScreen extends StatefulWidget {
@@ -716,8 +714,10 @@ class KodiTvScreen extends StatefulWidget {
 
 class _KodiTvScreenState extends State<KodiTvScreen> {
   final TextEditingController _urlCtrl = TextEditingController();
+  final TextEditingController _chapterCtrl = TextEditingController(text: '1');
+  final TextEditingController _customNameCtrl = TextEditingController();
   
-  List<String> _children = ['Lakshya', 'Child 2'];
+  List<String> _children = ['Lakshya'];
   String _selectedChild = 'Lakshya';
 
   List<String> _subjects = ['English', 'Math']; 
@@ -729,73 +729,207 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
   void initState() {
     super.initState();
     m3uPath = '${widget.basePath}/Master_Playlist.m3u';
-    _loadSubjects();
+    _loadGlobalData();
   }
 
-  Future<void> _loadSubjects() async {
+  Future<void> _loadGlobalData() async {
     try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      
+      // Load children
+      List<String>? savedChildren = prefs.getStringList('child_profiles');
+      if (savedChildren != null && savedChildren.isNotEmpty) {
+        _children = savedChildren;
+        if (!_children.contains(_selectedChild)) _selectedChild = _children.first;
+      }
+
+      // Load subjects from text file (synced with Home screen)
       final subFile = File('${widget.basePath}/saved_subjects.txt');
       if (await subFile.exists()) {
         final subLines = await subFile.readAsLines();
         if (subLines.isNotEmpty) {
-          setState(() {
-            _subjects = subLines;
-            _selectedSubject = _subjects.first;
-          });
+          _subjects = subLines;
+          if (!_subjects.contains(_selectedSubject)) _selectedSubject = _subjects.first;
         }
       }
+      setState(() {});
     } catch (e) {
-      debugPrint("Error loading subjects: $e");
+      debugPrint("Error loading data: $e");
     }
   }
 
-  String? _extractYouTubeId(String url) {
-    final RegExp regExp = RegExp(
-      r'(?<=watch\?v=|/videos/|embed/|youtu.be/|/v/|/e/|watch\?v%3D|watch\?feature=player_embedded&v=|%2Fvideos%2F|embed%2F|youtu.be%2F|%2Fv%2F)[^#\&\?\n]*',
-      caseSensitive: false,
-      multiLine: false,
-    );
-    final match = regExp.firstMatch(url);
-    return match?.group(0);
+  Future<void> _saveChildrenToMemory() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('child_profiles', _children);
   }
 
+  Future<void> _saveSubjectsToTextFile() async {
+    try {
+      final file = File('${widget.basePath}/saved_subjects.txt');
+      await file.writeAsString(_subjects.join('\n'));
+    } catch (e) {
+      _showSnackBar("Error syncing subjects: $e");
+    }
+  }
+
+  // --- CHILD PROFILE MANAGEMENT ---
+  void _showAddChildDialog() {
+    TextEditingController ctrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Add Child Profile"),
+        content: TextField(
+          controller: ctrl,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(hintText: "Enter name", border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              String name = ctrl.text.trim();
+              if (name.isNotEmpty && !_children.contains(name)) {
+                setState(() {
+                  _children.add(name);
+                  _selectedChild = name;
+                });
+                _saveChildrenToMemory();
+              }
+              Navigator.pop(context);
+            },
+            child: const Text("Add"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _removeChildProfile() {
+    if (_children.length <= 1) {
+      _showSnackBar("You must have at least one child profile!");
+      return;
+    }
+    setState(() {
+      _children.remove(_selectedChild);
+      _selectedChild = _children.first;
+    });
+    _saveChildrenToMemory();
+  }
+
+  // --- SUBJECT MANAGEMENT ---
+  void _showAddSubjectDialog() {
+    TextEditingController ctrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Add New Subject"),
+        content: TextField(
+          controller: ctrl,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(hintText: "e.g. Hindi, GK", border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              String newSub = ctrl.text.trim();
+              if (newSub.isNotEmpty && !_subjects.contains(newSub)) {
+                setState(() {
+                  _subjects.add(newSub);
+                  _selectedSubject = newSub;
+                });
+                _saveSubjectsToTextFile();
+              }
+              Navigator.pop(context);
+            },
+            child: const Text("Add"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _removeCurrentSubject() {
+    if (_subjects.length <= 1) {
+      _showSnackBar("You must have at least one subject!");
+      return;
+    }
+    setState(() {
+      _subjects.remove(_selectedSubject);
+      _selectedSubject = _subjects.first;
+    });
+    _saveSubjectsToTextFile();
+  }
+
+  // --- BUILD KODI PLAYLIST LOGIC ---
   Future<void> _saveToKodi() async {
-    String url = _urlCtrl.text.trim();
-    if (url.isEmpty) {
-      _showSnackBar("Please enter a YouTube link!");
+    String rawText = _urlCtrl.text.trim();
+    if (rawText.isEmpty) {
+      _showSnackBar("Please paste a link or ChatGPT text!");
       return;
     }
 
-    String? videoId = _extractYouTubeId(url);
-    if (videoId == null || videoId.length < 10) {
-      _showSnackBar("Invalid YouTube Link!");
+    // POWERFUL REGEX: Finds standard links, youtu.be, embed, and shorts IDs (11 chars)
+    RegExp regex = RegExp(r'(?:v=|youtu\.be\/|shorts\/|embed\/)([a-zA-Z0-9_-]{11})');
+    Iterable<RegExpMatch> matches = regex.allMatches(rawText);
+    
+    // Extract matches and remove duplicates from the batch
+    List<String> incomingIds = matches.map((m) => m.group(1)!).toSet().toList();
+
+    if (incomingIds.isEmpty) {
+      _showSnackBar("No valid YouTube links found in text!", success: false);
       return;
     }
 
     File m3uFile = File(m3uPath);
+    String existingContent = '';
     
     if (await m3uFile.exists()) {
-      String content = await m3uFile.readAsString();
-      if (content.contains(videoId)) {
-        _showSnackBar("Duplicate! Video already on TV.", success: false);
-        return;
-      }
+      existingContent = await m3uFile.readAsString();
     } else {
-      await m3uFile.writeAsString("#EXTM3U\n\n");
+      await m3uFile.writeAsString("#EXTM3U\n");
     }
 
-    String groupTitle = "$_selectedChild - $_selectedSubject";
-    String kodiCode = '''
-#EXTINF:-1 group-title="$groupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $_selectedSubject Lesson
-plugin://plugin.video.youtube/play/?video_id=$videoId
-''';
+    String chapter = _chapterCtrl.text.trim();
+    String customName = _customNameCtrl.text.trim();
+    
+    int addedCount = 0;
+    int dupCount = 0;
+    String newEntries = "";
 
-    try {
-      await m3uFile.writeAsString("$kodiCode\n", mode: FileMode.append);
-      _showSnackBar("✅ Saved to Kodi TV!", success: true);
-      _urlCtrl.clear();
-    } catch (e) {
-      _showSnackBar("Error saving: $e");
+    for (int i = 0; i < incomingIds.length; i++) {
+      String videoId = incomingIds[i];
+
+      // Smart Deduplication check against file
+      if (existingContent.contains(videoId)) {
+        dupCount++;
+        continue;
+      }
+
+      String titlePart = customName.isNotEmpty ? customName : "$_selectedSubject Lesson";
+      if (incomingIds.length > 1) {
+        titlePart += " (Part ${i + 1})";
+      }
+
+      String finalTitle = chapter.isNotEmpty ? "CH$chapter: $titlePart" : titlePart;
+      String groupTitle = "$_selectedChild - $_selectedSubject";
+      
+      newEntries += '\n#EXTINF:-1 group-title="$groupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
+      newEntries += 'plugin://plugin.video.youtube/play/?video_id=$videoId\n';
+      addedCount++;
+    }
+
+    if (addedCount > 0) {
+      try {
+        await m3uFile.writeAsString(newEntries, mode: FileMode.append);
+        _showSnackBar("✅ Success! Added $addedCount new video(s). (Skipped $dupCount duplicates)", success: true);
+        _urlCtrl.clear();
+      } catch (e) {
+        _showSnackBar("Error saving to file: $e");
+      }
+    } else {
+      _showSnackBar("All found links were already in your TV playlist!", success: false);
     }
   }
 
@@ -812,7 +946,7 @@ plugin://plugin.video.youtube/play/?video_id=$videoId
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(message),
       backgroundColor: success ? Colors.green : Colors.redAccent,
-      duration: const Duration(seconds: 3),
+      duration: const Duration(seconds: 4),
     ));
   }
 
@@ -820,36 +954,116 @@ plugin://plugin.video.youtube/play/?video_id=$videoId
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("Kodi TV Manager")),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // CHILD PROFILE ROW
             const Text("Child Profile:", style: TextStyle(fontWeight: FontWeight.bold)),
-            DropdownButtonFormField<String>(
-              value: _selectedChild,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-              items: _children.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (val) => setState(() => _selectedChild = val!),
-            ),
-            const SizedBox(height: 20),
-
-            const Text("Subject (Group Title):", style: TextStyle(fontWeight: FontWeight.bold)),
-            DropdownButtonFormField<String>(
-              value: _selectedSubject,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-              items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-              onChanged: (val) => setState(() => _selectedSubject = val!),
-            ),
-            const SizedBox(height: 20),
-
+            const SizedBox(height: 5),
             Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _selectedChild,
+                    decoration: const InputDecoration(border: OutlineInputBorder()),
+                    items: _children.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                    onChanged: (val) => setState(() => _selectedChild = val!),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: _showAddChildDialog,
+                  child: Container(
+                    height: 60, width: 50,
+                    decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blueAccent)),
+                    child: const Icon(Icons.add, color: Colors.blueAccent),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: _removeChildProfile,
+                  child: Container(
+                    height: 60, width: 50,
+                    decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.redAccent)),
+                    child: const Icon(Icons.delete, color: Colors.redAccent),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // SUBJECT ROW (Synced)
+            const Text("Subject (Group Title):", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 5),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _selectedSubject,
+                    decoration: const InputDecoration(border: OutlineInputBorder()),
+                    items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+                    onChanged: (val) => setState(() => _selectedSubject = val!),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: _showAddSubjectDialog,
+                  child: Container(
+                    height: 60, width: 50,
+                    decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blueAccent)),
+                    child: const Icon(Icons.add, color: Colors.blueAccent),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: _removeCurrentSubject,
+                  child: Container(
+                    height: 60, width: 50,
+                    decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.redAccent)),
+                    child: const Icon(Icons.delete, color: Colors.redAccent),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // CHAPTER AND CUSTOM NAME ROW
+            Row(
+              children: [
+                Expanded(
+                  flex: 1,
+                  child: TextField(
+                    controller: _chapterCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: "Chapter No.", border: OutlineInputBorder()),
+                  ),
+                ),
+                const SizedBox(width: 15),
+                Expanded(
+                  flex: 2,
+                  child: TextField(
+                    controller: _customNameCtrl,
+                    decoration: const InputDecoration(labelText: "Custom Name", hintText: "e.g., Train Poetry", border: OutlineInputBorder()),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // LINK PASTE BOX
+            const Text("YouTube Links:", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 5),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: TextField(
                     controller: _urlCtrl,
+                    maxLines: 4,
                     decoration: const InputDecoration(
-                      labelText: "YouTube Link", 
+                      hintText: "Paste ChatGPT text containing multiple links, or a single youtu.be link...", 
                       border: OutlineInputBorder(),
                     ),
                   ),
