@@ -388,7 +388,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             icon: const Icon(Icons.tv, color: Colors.blueAccent),
             tooltip: "Kodi TV Manager",
             onPressed: () async {
-              // Wait for TV screen to pop, then reload data to sync Subjects if changed
               await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => KodiTvScreen(basePath: _basePath!)),
@@ -700,7 +699,7 @@ class _PromptManagerScreenState extends State<PromptManagerScreen> {
 }
 
 // ============================================================================
-// KODI TV PLAYLIST MANAGER (Fully Upgraded)
+// KODI TV PLAYLIST MANAGER (Fully Upgraded with Auto-Chapter & Auto-Paste)
 // ============================================================================
 
 class KodiTvScreen extends StatefulWidget {
@@ -712,7 +711,7 @@ class KodiTvScreen extends StatefulWidget {
   _KodiTvScreenState createState() => _KodiTvScreenState();
 }
 
-class _KodiTvScreenState extends State<KodiTvScreen> {
+class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver {
   final TextEditingController _urlCtrl = TextEditingController();
   final TextEditingController _chapterCtrl = TextEditingController(text: '1');
   final TextEditingController _customNameCtrl = TextEditingController();
@@ -724,12 +723,45 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
   String _selectedSubject = 'English';
 
   late String m3uPath;
+  String _lastClipboardText = "";
 
   @override
   void initState() {
     super.initState();
     m3uPath = '${widget.basePath}/Master_Playlist.m3u';
+    WidgetsBinding.instance.addObserver(this); // Listen for app resume (for auto-pasting links)
     _loadGlobalData();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // --- THE SMART APP RESUME CATCHER ---
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkClipboardForYouTube();
+    }
+  }
+
+  Future<void> _checkClipboardForYouTube() async {
+    ClipboardData? data = await Clipboard.getData('text/plain');
+    if (data != null && data.text != null && data.text != _lastClipboardText) {
+      String text = data.text!;
+      if (text.contains('youtu.be') || text.contains('youtube.com')) {
+        setState(() {
+          _urlCtrl.text = text;
+          _lastClipboardText = text;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("🔗 YouTube link detected and auto-pasted!"),
+          backgroundColor: Colors.blueAccent,
+        ));
+      }
+    }
   }
 
   Future<void> _loadGlobalData() async {
@@ -753,9 +785,42 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
         }
       }
       setState(() {});
+      await _autoCalculateChapter(); // Set the chapter when data loads
     } catch (e) {
       debugPrint("Error loading data: $e");
     }
+  }
+
+  // --- AUTO-CHAPTER NUMBERING SYSTEM ---
+  Future<void> _autoCalculateChapter() async {
+    File m3uFile = File(m3uPath);
+    if (!await m3uFile.exists()) {
+      setState(() => _chapterCtrl.text = "1");
+      return;
+    }
+
+    String content = await m3uFile.readAsString();
+    String searchTag = 'group-title="$_selectedChild - $_selectedSubject"';
+    
+    int highestChapter = 0;
+    List<String> lines = content.split('\n');
+    for (String line in lines) {
+      if (line.contains(searchTag)) {
+        RegExp regExp = RegExp(r'CH(\d+):');
+        var match = regExp.firstMatch(line);
+        if (match != null) {
+          int chNum = int.tryParse(match.group(1)!) ?? 0;
+          if (chNum > highestChapter) highestChapter = chNum;
+        }
+      }
+    }
+    setState(() {
+      _chapterCtrl.text = (highestChapter + 1).toString();
+    });
+  }
+
+  void _onProfileOrSubjectChanged() {
+    _autoCalculateChapter(); // Recalculate anytime they change dropdowns
   }
 
   Future<void> _saveChildrenToMemory() async {
@@ -795,6 +860,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
                   _selectedChild = name;
                 });
                 _saveChildrenToMemory();
+                _onProfileOrSubjectChanged();
               }
               Navigator.pop(context);
             },
@@ -815,6 +881,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
       _selectedChild = _children.first;
     });
     _saveChildrenToMemory();
+    _onProfileOrSubjectChanged();
   }
 
   // --- SUBJECT MANAGEMENT ---
@@ -840,6 +907,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
                   _selectedSubject = newSub;
                 });
                 _saveSubjectsToTextFile();
+                _onProfileOrSubjectChanged();
               }
               Navigator.pop(context);
             },
@@ -860,6 +928,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
       _selectedSubject = _subjects.first;
     });
     _saveSubjectsToTextFile();
+    _onProfileOrSubjectChanged();
   }
 
   // --- BUILD KODI PLAYLIST LOGIC ---
@@ -925,6 +994,8 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
         await m3uFile.writeAsString(newEntries, mode: FileMode.append);
         _showSnackBar("✅ Success! Added $addedCount new video(s). (Skipped $dupCount duplicates)", success: true);
         _urlCtrl.clear();
+        _customNameCtrl.clear();
+        _autoCalculateChapter(); // Automatically step up to the next chapter!
       } catch (e) {
         _showSnackBar("Error saving to file: $e");
       }
@@ -953,7 +1024,21 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Kodi TV Manager")),
+      appBar: AppBar(
+        title: const Text("Kodi TV Manager"),
+        actions: [
+          // PLAYLIST MANAGER BUTTON (NEW!)
+          IconButton(
+            icon: const Icon(Icons.list_alt, color: Colors.orangeAccent),
+            tooltip: "Manage Playlist",
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(
+                builder: (context) => PlaylistManagerScreen(m3uPath: m3uPath, childrenProfiles: _children)
+              ));
+            },
+          )
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -969,7 +1054,10 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
                     value: _selectedChild,
                     decoration: const InputDecoration(border: OutlineInputBorder()),
                     items: _children.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                    onChanged: (val) => setState(() => _selectedChild = val!),
+                    onChanged: (val) {
+                      setState(() => _selectedChild = val!);
+                      _onProfileOrSubjectChanged();
+                    }
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -1004,7 +1092,10 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
                     value: _selectedSubject,
                     decoration: const InputDecoration(border: OutlineInputBorder()),
                     items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-                    onChanged: (val) => setState(() => _selectedSubject = val!),
+                    onChanged: (val) {
+                      setState(() => _selectedSubject = val!);
+                      _onProfileOrSubjectChanged();
+                    }
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -1105,3 +1196,145 @@ class _KodiTvScreenState extends State<KodiTvScreen> {
   }
 }
 
+// ============================================================================
+// NEW FEATURE: PLAYLIST MANAGER (FILTER & DELETE)
+// ============================================================================
+class PlaylistManagerScreen extends StatefulWidget {
+  final String m3uPath;
+  final List<String> childrenProfiles;
+
+  const PlaylistManagerScreen({Key? key, required this.m3uPath, required this.childrenProfiles}) : super(key: key);
+
+  @override
+  _PlaylistManagerScreenState createState() => _PlaylistManagerScreenState();
+}
+
+class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
+  String _selectedFilter = 'All';
+  List<M3uItem> _playlistItems = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedFilter = widget.childrenProfiles.isNotEmpty ? widget.childrenProfiles.first : 'All';
+    _loadPlaylist();
+  }
+
+  Future<void> _loadPlaylist() async {
+    File m3uFile = File(widget.m3uPath);
+    if (!await m3uFile.exists()) return;
+    
+    String content = await m3uFile.readAsString();
+    List<String> lines = content.split('\n');
+    List<M3uItem> items = [];
+    
+    for (int i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('#EXTINF:')) {
+        String info = lines[i];
+        String url = (i + 1 < lines.length) ? lines[i + 1] : "";
+        
+        // Extract Group Title
+        RegExp groupRegex = RegExp(r'group-title="([^"]+)"');
+        String group = groupRegex.firstMatch(info)?.group(1) ?? "Unknown";
+        
+        // Extract Display Name
+        String name = info.substring(info.lastIndexOf(',') + 1).trim();
+        
+        items.add(M3uItem(infoLine: info, urlLine: url, groupTitle: group, displayName: name));
+      }
+    }
+    setState(() => _playlistItems = items);
+  }
+
+  Future<void> _deleteItem(M3uItem itemToDelete) async {
+    _playlistItems.remove(itemToDelete);
+    
+    // Rebuild the M3U file from scratch
+    String newContent = "#EXTM3U\n";
+    for (var item in _playlistItems) {
+      newContent += '\n${item.infoLine}\n${item.urlLine}\n';
+    }
+    
+    File m3uFile = File(widget.m3uPath);
+    await m3uFile.writeAsString(newContent);
+    setState(() {});
+    
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Video deleted from TV."), backgroundColor: Colors.redAccent));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Filter the items by the selected child profile
+    List<M3uItem> filteredItems = _selectedFilter == 'All' 
+        ? _playlistItems 
+        : _playlistItems.where((item) => item.groupTitle.startsWith(_selectedFilter)).toList();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text("Manage TV Videos")),
+      body: Column(
+        children: [
+          // CHILD FILTER TABS
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            color: Colors.grey.shade900,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  const SizedBox(width: 10),
+                  _buildTab('All'),
+                  ...widget.childrenProfiles.map((c) => _buildTab(c)).toList(),
+                ],
+              ),
+            ),
+          ),
+          
+          // VIDEO LIST
+          Expanded(
+            child: ListView.builder(
+              itemCount: filteredItems.length,
+              itemBuilder: (context, index) {
+                var item = filteredItems[index];
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  child: ListTile(
+                    title: Text(item.displayName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(item.groupTitle, style: const TextStyle(color: Colors.orangeAccent)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () => _deleteItem(item), // Deletes video
+                    ),
+                  ),
+                );
+              },
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTab(String name) {
+    bool isSelected = _selectedFilter == name;
+    return GestureDetector(
+      onTap: () => setState(() => _selectedFilter = name),
+      child: Container(
+        margin: const EdgeInsets.only(right: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.blueAccent : Colors.grey.shade800,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(name, style: TextStyle(color: isSelected ? Colors.white : Colors.grey.shade400, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+}
+
+class M3uItem {
+  final String infoLine;
+  final String urlLine;
+  final String groupTitle;
+  final String displayName;
+  M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName});
+}
