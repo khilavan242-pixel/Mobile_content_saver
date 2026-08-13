@@ -18,6 +18,9 @@ dependencies:
   file_picker: ^8.1.2
   shared_preferences: ^2.2.3
 
+dependency_overrides:
+  flutter_plugin_android_lifecycle: 2.0.24
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
