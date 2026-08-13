@@ -699,7 +699,7 @@ class _PromptManagerScreenState extends State<PromptManagerScreen> {
 }
 
 // ============================================================================
-// KODI TV PLAYLIST MANAGER (Fully Upgraded with Auto-Chapter & Auto-Paste)
+// KODI TV PLAYLIST MANAGER (Fully Upgraded with ChatGPT Mode)
 // ============================================================================
 
 class KodiTvScreen extends StatefulWidget {
@@ -729,7 +729,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
   void initState() {
     super.initState();
     m3uPath = '${widget.basePath}/Master_Playlist.m3u';
-    WidgetsBinding.instance.addObserver(this); // Listen for app resume (for auto-pasting links)
+    WidgetsBinding.instance.addObserver(this); 
     _loadGlobalData();
   }
 
@@ -739,7 +739,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     super.dispose();
   }
 
-  // --- THE SMART APP RESUME CATCHER ---
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
@@ -751,13 +750,13 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     ClipboardData? data = await Clipboard.getData('text/plain');
     if (data != null && data.text != null && data.text != _lastClipboardText) {
       String text = data.text!;
-      if (text.contains('youtu.be') || text.contains('youtube.com')) {
+      if (text.contains('youtu.be') || text.contains('youtube.com') || text.contains('#EXTINF')) {
         setState(() {
           _urlCtrl.text = text;
           _lastClipboardText = text;
         });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("🔗 YouTube link detected and auto-pasted!"),
+          content: Text("🔗 Data detected and auto-pasted!"),
           backgroundColor: Colors.blueAccent,
         ));
       }
@@ -768,14 +767,12 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     try {
       SharedPreferences prefs = await SharedPreferences.getInstance();
       
-      // Load children
       List<String>? savedChildren = prefs.getStringList('child_profiles');
       if (savedChildren != null && savedChildren.isNotEmpty) {
         _children = savedChildren;
         if (!_children.contains(_selectedChild)) _selectedChild = _children.first;
       }
 
-      // Load subjects from text file (synced with Home screen)
       final subFile = File('${widget.basePath}/saved_subjects.txt');
       if (await subFile.exists()) {
         final subLines = await subFile.readAsLines();
@@ -785,13 +782,12 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
         }
       }
       setState(() {});
-      await _autoCalculateChapter(); // Set the chapter when data loads
+      await _autoCalculateChapter(); 
     } catch (e) {
       debugPrint("Error loading data: $e");
     }
   }
 
-  // --- AUTO-CHAPTER NUMBERING SYSTEM ---
   Future<void> _autoCalculateChapter() async {
     File m3uFile = File(m3uPath);
     if (!await m3uFile.exists()) {
@@ -820,7 +816,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
   }
 
   void _onProfileOrSubjectChanged() {
-    _autoCalculateChapter(); // Recalculate anytime they change dropdowns
+    _autoCalculateChapter(); 
   }
 
   Future<void> _saveChildrenToMemory() async {
@@ -837,7 +833,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     }
   }
 
-  // --- CHILD PROFILE MANAGEMENT ---
   void _showAddChildDialog() {
     TextEditingController ctrl = TextEditingController();
     showDialog(
@@ -884,7 +879,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     _onProfileOrSubjectChanged();
   }
 
-  // --- SUBJECT MANAGEMENT ---
   void _showAddSubjectDialog() {
     TextEditingController ctrl = TextEditingController();
     showDialog(
@@ -931,23 +925,11 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     _onProfileOrSubjectChanged();
   }
 
-  // --- BUILD KODI PLAYLIST LOGIC ---
+  // --- THE NEW SUPER-SMART KODI SAVER ---
   Future<void> _saveToKodi() async {
     String rawText = _urlCtrl.text.trim();
     if (rawText.isEmpty) {
       _showSnackBar("Please paste a link or ChatGPT text!");
-      return;
-    }
-
-    // POWERFUL REGEX: Finds standard links, youtu.be, embed, and shorts IDs (11 chars)
-    RegExp regex = RegExp(r'(?:v=|youtu\.be\/|shorts\/|embed\/)([a-zA-Z0-9_-]{11})');
-    Iterable<RegExpMatch> matches = regex.allMatches(rawText);
-    
-    // Extract matches and remove duplicates from the batch
-    List<String> incomingIds = matches.map((m) => m.group(1)!).toSet().toList();
-
-    if (incomingIds.isEmpty) {
-      _showSnackBar("No valid YouTube links found in text!", success: false);
       return;
     }
 
@@ -960,6 +942,73 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       await m3uFile.writeAsString("#EXTM3U\n");
     }
 
+    // ==========================================
+    // MODE 2: CHATGPT PRE-FORMATTED M3U PASTE
+    // ==========================================
+    if (rawText.contains('#EXTINF')) {
+      List<String> lines = rawText.split('\n');
+      String newEntries = "";
+      int addedCount = 0;
+      int dupCount = 0;
+
+      for (int i = 0; i < lines.length; i++) {
+        if (lines[i].trim().startsWith('#EXTINF')) {
+          String infoLine = lines[i].trim();
+          String urlLine = (i + 1 < lines.length) ? lines[i + 1].trim() : "";
+          
+          // 1. Fix ChatGPT Markdown Bugs (Asterisks replacing underscores)
+          urlLine = urlLine.replaceAll('*', '_');
+          infoLine = infoLine.replaceAll('*', '_');
+          
+          // 2. Fix ChatGPT Markdown Link Bug inside tvg-logo
+          infoLine = infoLine.replaceAllMapped(RegExp(r'tvg-logo="\[(.*?)\]\(.*?\)"'), (match) {
+            return 'tvg-logo="${match.group(1)}"';
+          });
+
+          // 3. Extract ID to check for duplicates
+          RegExp idRegex = RegExp(r'video_id=([a-zA-Z0-9_-]{11})');
+          var match = idRegex.firstMatch(urlLine);
+          
+          if (match != null) {
+            String videoId = match.group(1)!;
+            if (existingContent.contains(videoId)) {
+              dupCount++;
+            } else {
+              newEntries += '\n$infoLine\n$urlLine\n';
+              addedCount++;
+              existingContent += videoId; // Prevent dupes in same batch
+            }
+          }
+        }
+      }
+      
+      if (addedCount > 0) {
+        try {
+          await m3uFile.writeAsString(newEntries, mode: FileMode.append);
+          _showSnackBar("✅ Success! Added $addedCount ChatGPT video(s). (Skipped $dupCount duplicates)", success: true);
+          _urlCtrl.clear();
+          _autoCalculateChapter(); 
+        } catch (e) {
+          _showSnackBar("Error saving to file: $e");
+        }
+      } else {
+        _showSnackBar("All found links were already in your TV playlist!", success: false);
+      }
+      return;
+    }
+
+    // ==========================================
+    // MODE 1: STANDARD RAW YOUTUBE LINKS
+    // ==========================================
+    RegExp regex = RegExp(r'(?:v=|youtu\.be\/|shorts\/|embed\/|video_id=|vi\/)([a-zA-Z0-9_-]{11})');
+    Iterable<RegExpMatch> matches = regex.allMatches(rawText);
+    List<String> incomingIds = matches.map((m) => m.group(1)!).toSet().toList();
+
+    if (incomingIds.isEmpty) {
+      _showSnackBar("No valid YouTube links found in text!", success: false);
+      return;
+    }
+
     String chapter = _chapterCtrl.text.trim();
     String customName = _customNameCtrl.text.trim();
     
@@ -970,7 +1019,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     for (int i = 0; i < incomingIds.length; i++) {
       String videoId = incomingIds[i];
 
-      // Smart Deduplication check against file
       if (existingContent.contains(videoId)) {
         dupCount++;
         continue;
@@ -995,7 +1043,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
         _showSnackBar("✅ Success! Added $addedCount new video(s). (Skipped $dupCount duplicates)", success: true);
         _urlCtrl.clear();
         _customNameCtrl.clear();
-        _autoCalculateChapter(); // Automatically step up to the next chapter!
+        _autoCalculateChapter(); 
       } catch (e) {
         _showSnackBar("Error saving to file: $e");
       }
@@ -1027,7 +1075,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       appBar: AppBar(
         title: const Text("Kodi TV Manager"),
         actions: [
-          // PLAYLIST MANAGER BUTTON (NEW!)
           IconButton(
             icon: const Icon(Icons.list_alt, color: Colors.orangeAccent),
             tooltip: "Manage Playlist",
@@ -1154,7 +1201,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
                     controller: _urlCtrl,
                     maxLines: 4,
                     decoration: const InputDecoration(
-                      hintText: "Paste ChatGPT text containing multiple links, or a single youtu.be link...", 
+                      hintText: "Paste raw links OR full ChatGPT M3U text here...", 
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1197,7 +1244,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
 }
 
 // ============================================================================
-// NEW FEATURE: PLAYLIST MANAGER (FILTER & DELETE)
+// PLAYLIST MANAGER (FILTER & DELETE)
 // ============================================================================
 class PlaylistManagerScreen extends StatefulWidget {
   final String m3uPath;
@@ -1233,11 +1280,9 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
         String info = lines[i];
         String url = (i + 1 < lines.length) ? lines[i + 1] : "";
         
-        // Extract Group Title
         RegExp groupRegex = RegExp(r'group-title="([^"]+)"');
         String group = groupRegex.firstMatch(info)?.group(1) ?? "Unknown";
         
-        // Extract Display Name
         String name = info.substring(info.lastIndexOf(',') + 1).trim();
         
         items.add(M3uItem(infoLine: info, urlLine: url, groupTitle: group, displayName: name));
@@ -1249,7 +1294,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   Future<void> _deleteItem(M3uItem itemToDelete) async {
     _playlistItems.remove(itemToDelete);
     
-    // Rebuild the M3U file from scratch
     String newContent = "#EXTM3U\n";
     for (var item in _playlistItems) {
       newContent += '\n${item.infoLine}\n${item.urlLine}\n';
@@ -1264,7 +1308,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Filter the items by the selected child profile
     List<M3uItem> filteredItems = _selectedFilter == 'All' 
         ? _playlistItems 
         : _playlistItems.where((item) => item.groupTitle.startsWith(_selectedFilter)).toList();
@@ -1273,7 +1316,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
       appBar: AppBar(title: const Text("Manage TV Videos")),
       body: Column(
         children: [
-          // CHILD FILTER TABS
           Container(
             padding: const EdgeInsets.symmetric(vertical: 10),
             color: Colors.grey.shade900,
@@ -1289,7 +1331,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
             ),
           ),
           
-          // VIDEO LIST
           Expanded(
             child: ListView.builder(
               itemCount: filteredItems.length,
@@ -1302,7 +1343,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                     subtitle: Text(item.groupTitle, style: const TextStyle(color: Colors.orangeAccent)),
                     trailing: IconButton(
                       icon: const Icon(Icons.delete, color: Colors.red),
-                      onPressed: () => _deleteItem(item), // Deletes video
+                      onPressed: () => _deleteItem(item), 
                     ),
                   ),
                 );
@@ -1338,3 +1379,4 @@ class M3uItem {
   final String displayName;
   M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName});
 }
+
