@@ -24,14 +24,3 @@ plugins {
 }
 
 include ":app"
-
-// THE DEFINITIVE FIX: Force all plugins to API 36 at configuration time
-gradle.allprojects {
-    afterEvaluate { project ->
-        if (project.hasProperty('android')) {
-            project.android {
-                compileSdk = 36
-            }
-        }
-    }
-}
