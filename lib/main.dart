@@ -369,7 +369,7 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const PromptManagerScreen()),
+                MaterialPageRoute(builder: (context) => PromptManagerScreen(basePath: _basePath!)),
               );
             },
           ),
@@ -684,153 +684,360 @@ class _HomeworkFileManagerScreenState extends State<HomeworkFileManagerScreen> {
 }
 
 // ============================================================================
-// PROMPT MANAGER FOR AI
+// PROMPT MANAGER (TEXT FILE METHOD & WORLD-CLASS UI)
 // ============================================================================
 class PromptManagerScreen extends StatefulWidget {
-  const PromptManagerScreen({Key? key}) : super(key: key);
+  final String basePath;
+  const PromptManagerScreen({Key? key, required this.basePath}) : super(key: key);
 
   @override
   _PromptManagerScreenState createState() => _PromptManagerScreenState();
 }
 
 class _PromptManagerScreenState extends State<PromptManagerScreen> {
-  Map<String, String> _prompts = {};
-  
+  List<AiPrompt> _prompts = [];
+  String _selectedFilter = 'All';
+  final List<String> _categories = ['Kodi M3U', 'Quiz', 'Worksheet', 'General'];
+
   @override
   void initState() {
     super.initState();
-    _loadPrompts();
+    _loadPromptsFromFolder();
   }
 
-  Future<void> _loadPrompts() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? promptsJson = prefs.getString('saved_ai_prompts');
-    if (promptsJson != null) {
-      setState(() {
-        _prompts = Map<String, String>.from(jsonDecode(promptsJson));
-      });
+  // --- 1. LOAD FROM TEXT FILES ---
+  Future<void> _loadPromptsFromFolder() async {
+    Directory promptDir = Directory('${widget.basePath}/AI_Prompts');
+    if (!await promptDir.exists()) {
+      await promptDir.create();
+    }
+
+    List<FileSystemEntity> files = promptDir.listSync();
+    List<AiPrompt> loadedPrompts = [];
+
+    for (var entity in files) {
+      if (entity is File && entity.path.endsWith('.txt')) {
+        String fileName = entity.path.split('/').last.replaceAll('.txt', '');
+        
+        // Parse "Category - Title" format
+        String category = 'General';
+        String title = fileName;
+        
+        if (fileName.contains(' - ')) {
+          List<String> parts = fileName.split(' - ');
+          category = parts[0].trim();
+          title = parts.sublist(1).join(' - ').trim();
+        }
+
+        String content = await entity.readAsString();
+        loadedPrompts.add(AiPrompt(title: title, content: content, category: category, file: entity));
+      }
+    }
+    
+    setState(() {
+      _prompts = loadedPrompts;
+    });
+  }
+
+  // --- 2. SAVE OR EDIT TEXT FILE ---
+  Future<void> _savePrompt(String title, String content, String category, {File? existingFile}) async {
+    Directory promptDir = Directory('${widget.basePath}/AI_Prompts');
+    if (!await promptDir.exists()) await promptDir.create();
+
+    // Sanitize title to prevent file system errors
+    String cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+    String newFileName = '$category - $cleanTitle.txt';
+    File newFile = File('${promptDir.path}/$newFileName');
+
+    // If editing and the name/category changed, delete the old file
+    if (existingFile != null && existingFile.path != newFile.path) {
+      if (await existingFile.exists()) {
+        await existingFile.delete();
+      }
+    }
+
+    // Save the new file
+    await newFile.writeAsString(content);
+    
+    // Refresh UI
+    _loadPromptsFromFolder();
+  }
+
+  Future<void> _deletePrompt(AiPrompt prompt) async {
+    if (await prompt.file.exists()) {
+      await prompt.file.delete();
+    }
+    setState(() => _prompts.remove(prompt));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Prompt deleted"), backgroundColor: Colors.redAccent));
+  }
+
+  Color _getCategoryColor(String category) {
+    switch (category) {
+      case 'Kodi M3U': return Colors.purpleAccent;
+      case 'Quiz': return Colors.orangeAccent;
+      case 'Worksheet': return Colors.greenAccent;
+      default: return Colors.blueAccent;
     }
   }
 
-  Future<void> _savePrompts() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('saved_ai_prompts', jsonEncode(_prompts));
+  void _copyToClipboard(String content, String title) {
+    Clipboard.setData(ClipboardData(text: content));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("✅ '$title' copied!"),
+      backgroundColor: Colors.green,
+      duration: const Duration(seconds: 2),
+    ));
   }
 
-  void _showAddPromptDialog() {
-    TextEditingController nameCtrl = TextEditingController();
-    TextEditingController contentCtrl = TextEditingController();
+  void _showAddEditDialog({AiPrompt? existingPrompt}) {
+    TextEditingController titleCtrl = TextEditingController(text: existingPrompt?.title ?? '');
+    TextEditingController contentCtrl = TextEditingController(text: existingPrompt?.content ?? '');
+    String currentCategory = existingPrompt?.category ?? 'General';
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Save New AI Prompt"),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(labelText: "Prompt Name", hintText: "e.g., Kodi Video Builder", border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 15),
-              TextField(
-                controller: contentCtrl,
-                maxLines: 5,
-                decoration: const InputDecoration(labelText: "Prompt Text", hintText: "Paste the full prompt here...", border: OutlineInputBorder()),
-              ),
-            ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existingPrompt == null ? "Create New Prompt" : "Edit Prompt"),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: "Prompt Title", border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 15),
+                const Text("Category:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                Wrap(
+                  spacing: 8,
+                  children: _categories.map((cat) => ChoiceChip(
+                    label: Text(cat, style: const TextStyle(fontSize: 12)),
+                    selected: currentCategory == cat,
+                    selectedColor: _getCategoryColor(cat).withOpacity(0.5),
+                    onSelected: (val) => setDialogState(() => currentCategory = cat),
+                  )).toList(),
+                ),
+                const SizedBox(height: 15),
+                TextField(
+                  controller: contentCtrl,
+                  maxLines: 6,
+                  decoration: const InputDecoration(labelText: "Prompt Instructions", border: OutlineInputBorder(), alignLabelWithHint: true),
+                ),
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () {
-              String name = nameCtrl.text.trim();
-              String content = contentCtrl.text.trim();
-              
-              if (name.isNotEmpty && content.isNotEmpty) {
-                setState(() {
-                  _prompts[name] = content;
-                });
-                _savePrompts();
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+            ElevatedButton(
+              onPressed: () async {
+                if (titleCtrl.text.trim().isEmpty || contentCtrl.text.trim().isEmpty) return;
+                
+                await _savePrompt(
+                  titleCtrl.text.trim(), 
+                  contentCtrl.text.trim(), 
+                  currentCategory, 
+                  existingFile: existingPrompt?.file
+                );
+                
                 Navigator.pop(context);
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            child: const Text("Save Prompt", style: TextStyle(color: Colors.white)),
-          ),
-        ],
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: const Text("Save", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  void _copyToClipboard(String content, String name) {
-    Clipboard.setData(ClipboardData(text: content));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("✅ '$name' copied to clipboard!"),
-      backgroundColor: Colors.green,
-    ));
-  }
-
-  void _deletePrompt(String name) {
-    setState(() {
-      _prompts.remove(name);
-    });
-    _savePrompts();
+  void _showReaderSheet(AiPrompt prompt) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, top: 20, left: 20, right: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(child: Text(prompt.title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold))),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(color: _getCategoryColor(prompt.category).withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: _getCategoryColor(prompt.category))),
+                  child: Text(prompt.category, style: TextStyle(color: _getCategoryColor(prompt.category), fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 15),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(15),
+              decoration: BoxDecoration(color: Colors.grey.shade900, borderRadius: BorderRadius.circular(12)),
+              child: Text(prompt.content, style: const TextStyle(fontSize: 16, height: 1.5)),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _deletePrompt(prompt);
+                  },
+                  icon: const Icon(Icons.delete, color: Colors.redAccent),
+                  label: const Text("Delete", style: TextStyle(color: Colors.redAccent)),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _showAddEditDialog(existingPrompt: prompt);
+                  },
+                  icon: const Icon(Icons.edit, color: Colors.blueAccent),
+                  label: const Text("Edit", style: TextStyle(color: Colors.blueAccent)),
+                ),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _copyToClipboard(prompt.content, prompt.title);
+                  },
+                  icon: const Icon(Icons.copy, color: Colors.white),
+                  label: const Text("Copy", style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    List<AiPrompt> filteredPrompts = _selectedFilter == 'All' 
+        ? _prompts 
+        : _prompts.where((p) => p.category == _selectedFilter).toList();
+
     return Scaffold(
       appBar: AppBar(title: const Text("AI Prompts Manager")),
-      body: _prompts.isEmpty
-          ? const Center(child: Text("No prompts saved yet.\nTap the + button to add one!", textAlign: TextAlign.center))
-          : ListView.builder(
-              padding: const EdgeInsets.all(15),
-              itemCount: _prompts.length,
-              itemBuilder: (context, index) {
-                String key = _prompts.keys.elementAt(index);
-                String content = _prompts[key]!;
-
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  child: ExpansionTile(
-                    title: Text(key, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                    subtitle: const Text("Tap to view content or copy", style: TextStyle(color: Colors.grey, fontSize: 12)),
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.all(15.0),
-                        child: Text(content, style: const TextStyle(color: Colors.white70)),
-                      ),
-                      ButtonBar(
-                        alignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton.icon(
-                            onPressed: () => _deletePrompt(key),
-                            icon: const Icon(Icons.delete, color: Colors.redAccent),
-                            label: const Text("Delete", style: TextStyle(color: Colors.redAccent)),
-                          ),
-                          ElevatedButton.icon(
-                            onPressed: () => _copyToClipboard(content, key),
-                            icon: const Icon(Icons.copy, color: Colors.white),
-                            label: const Text("Copy Prompt", style: TextStyle(color: Colors.white)),
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                          ),
-                        ],
-                      )
-                    ],
-                  ),
-                );
-              },
+      body: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+            color: Colors.grey.shade900,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildFilterChip('All'),
+                  ..._categories.map((cat) => _buildFilterChip(cat)).toList(),
+                ],
+              ),
             ),
+          ),
+          
+          Expanded(
+            child: filteredPrompts.isEmpty
+                ? const Center(child: Text("No prompts found.\nTap + to create a text file!", textAlign: TextAlign.center))
+                : ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: filteredPrompts.length,
+                    itemBuilder: (context, index) {
+                      AiPrompt prompt = filteredPrompts[index];
+                      String indexNumber = (index + 1).toString().padLeft(2, '0');
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(15),
+                          onTap: () => _showReaderSheet(prompt),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  width: 35,
+                                  height: 35,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(color: Colors.grey.shade800, shape: BoxShape.circle),
+                                  child: Text("#$indexNumber", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(child: Text(prompt.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                            decoration: BoxDecoration(color: _getCategoryColor(prompt.category).withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+                                            child: Text(prompt.category, style: TextStyle(color: _getCategoryColor(prompt.category), fontSize: 10, fontWeight: FontWeight.bold)),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(prompt.content, style: const TextStyle(color: Colors.grey, fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.copy, color: Colors.green),
+                                  tooltip: "Quick Copy",
+                                  onPressed: () => _copyToClipboard(prompt.content, prompt.title),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _showAddPromptDialog,
+        onPressed: _showAddEditDialog,
         backgroundColor: Colors.green,
         child: const Icon(Icons.add, color: Colors.white),
       ),
     );
   }
+
+  Widget _buildFilterChip(String label) {
+    bool isSelected = _selectedFilter == label;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8.0),
+      child: ChoiceChip(
+        label: Text(label, style: TextStyle(color: isSelected ? Colors.white : Colors.grey)),
+        selected: isSelected,
+        selectedColor: _getCategoryColor(label == 'All' ? 'General' : label),
+        backgroundColor: Colors.grey.shade800,
+        onSelected: (val) => setState(() => _selectedFilter = label),
+      ),
+    );
+  }
+}
+
+class AiPrompt {
+  String title;
+  String content;
+  String category;
+  File file;
+
+  AiPrompt({required this.title, required this.content, required this.category, required this.file});
 }
 
 // ============================================================================
@@ -1096,7 +1303,6 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
             infoLine = infoLine.replaceFirst('#EXTINF:-1', '#EXTINF:-1 group-title="$forcedGroupTitle"');
           }
           
-          // Ensure new links start as "working" if they don't have a status
           if (!infoLine.contains('play-status="')) {
             infoLine = infoLine.replaceFirst('#EXTINF:-1', '#EXTINF:-1 play-status="working"');
           }
@@ -1406,7 +1612,7 @@ class PlaylistManagerScreen extends StatefulWidget {
 class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   String _selectedFilter = 'All';
   Set<String> _selectedSubjects = {}; 
-  String _selectedStatus = 'All'; // Link Health Filter
+  String _selectedStatus = 'All'; 
   String _searchQuery = '';
   List<M3uItem> _playlistItems = [];
   Set<M3uItem> _selectedItems = {};
