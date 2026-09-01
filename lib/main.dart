@@ -1095,6 +1095,11 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
           } else {
             infoLine = infoLine.replaceFirst('#EXTINF:-1', '#EXTINF:-1 group-title="$forcedGroupTitle"');
           }
+          
+          // Ensure new links start as "working" if they don't have a status
+          if (!infoLine.contains('play-status="')) {
+            infoLine = infoLine.replaceFirst('#EXTINF:-1', '#EXTINF:-1 play-status="working"');
+          }
 
           urlLine = urlLine.replaceAll('*', '_');
           infoLine = infoLine.replaceAll('*', '_');
@@ -1176,7 +1181,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
 
       String finalTitle = _chapterCtrl.text.trim().isNotEmpty ? "CH$currentChapter: $titlePart" : titlePart;
       
-      newEntries += '\n#EXTINF:-1 group-title="$forcedGroupTitle" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
+      newEntries += '\n#EXTINF:-1 group-title="$forcedGroupTitle" play-status="working" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
       newEntries += 'plugin://plugin.video.youtube/play/?video_id=$videoId\n';
       addedCount++;
       currentChapter++;
@@ -1386,7 +1391,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
 }
 
 // ============================================================================
-// PLAYLIST MANAGER (WORLD-CLASS UI: SEARCH, EDIT, YOUTUBE PLAY, FILTERS)
+// PLAYLIST MANAGER (WORLD-CLASS UI: BATCH ACTIONS, STATUS FILTERS)
 // ============================================================================
 class PlaylistManagerScreen extends StatefulWidget {
   final String m3uPath;
@@ -1401,6 +1406,7 @@ class PlaylistManagerScreen extends StatefulWidget {
 class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   String _selectedFilter = 'All';
   Set<String> _selectedSubjects = {}; 
+  String _selectedStatus = 'All'; // Link Health Filter
   String _searchQuery = '';
   List<M3uItem> _playlistItems = [];
   Set<M3uItem> _selectedItems = {};
@@ -1429,9 +1435,12 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
         RegExp groupRegex = RegExp(r'group-title="([^"]+)"');
         String group = groupRegex.firstMatch(info)?.group(1) ?? "Unknown";
         
+        RegExp statusRegex = RegExp(r'play-status="([^"]+)"');
+        String status = statusRegex.firstMatch(info)?.group(1) ?? "working";
+
         String name = info.substring(info.lastIndexOf(',') + 1).trim();
         
-        items.add(M3uItem(infoLine: info, urlLine: url, groupTitle: group, displayName: name));
+        items.add(M3uItem(infoLine: info, urlLine: url, groupTitle: group, displayName: name, playStatus: status));
       }
     }
     setState(() => _playlistItems = items);
@@ -1473,6 +1482,19 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     
     await _savePlaylistToFile();
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Videos deleted & chapters corrected!"), backgroundColor: Colors.redAccent));
+  }
+
+  Future<void> _updateItemStatus(M3uItem item, String newStatus) async {
+    setState(() {
+      if (item.infoLine.contains('play-status="')) {
+        item.infoLine = item.infoLine.replaceAll(RegExp(r'play-status="[^"]*"'), 'play-status="$newStatus"');
+      } else {
+        item.infoLine = item.infoLine.replaceFirst('#EXTINF:-1', '#EXTINF:-1 play-status="$newStatus"');
+      }
+      item.playStatus = newStatus;
+    });
+    await _savePlaylistToFile();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Marked as ${newStatus.toUpperCase()}"), backgroundColor: Colors.orange));
   }
 
   Future<void> _playInYouTube(String urlLine) async {
@@ -1571,6 +1593,26 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
               title: const Text('Edit Details / M3U Code'),
               onTap: () { Navigator.pop(context); _showEditDialog(item); },
             ),
+            const Divider(),
+            if (item.playStatus != 'working')
+              ListTile(
+                leading: const Icon(Icons.check_circle, color: Colors.green),
+                title: const Text('Mark as Working (Fix)'),
+                onTap: () { Navigator.pop(context); _updateItemStatus(item, 'working'); },
+              ),
+            if (item.playStatus != 'unavailable')
+              ListTile(
+                leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                title: const Text('Mark as Video Unavailable'),
+                onTap: () { Navigator.pop(context); _updateItemStatus(item, 'unavailable'); },
+              ),
+            if (item.playStatus != 'kodi_error')
+              ListTile(
+                leading: const Icon(Icons.volume_off, color: Colors.orange),
+                title: const Text('Mark as Kodi Playback Error'),
+                onTap: () { Navigator.pop(context); _updateItemStatus(item, 'kodi_error'); },
+              ),
+            const Divider(),
             ListTile(
               leading: const Icon(Icons.delete, color: Colors.red),
               title: const Text('Delete Video'),
@@ -1607,8 +1649,9 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
             bool matchesProfile = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
             String itemSubject = item.groupTitle.contains(' - ') ? item.groupTitle.split(' - ').last.trim() : item.groupTitle.trim();
             bool matchesSubject = _selectedSubjects.isEmpty || _selectedSubjects.contains(itemSubject);
+            bool matchesStatus = _selectedStatus == 'All' || item.playStatus == _selectedStatus;
             bool matchesSearch = item.displayName.toLowerCase().contains(_searchQuery.toLowerCase());
-            return matchesProfile && matchesSubject && matchesSearch;
+            return matchesProfile && matchesSubject && matchesStatus && matchesSearch;
           }).length;
 
           return Padding(
@@ -1628,6 +1671,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                         setSheetState(() {
                           _selectedFilter = 'All';
                           _selectedSubjects.clear();
+                          _selectedStatus = 'All';
                         });
                         setState(() {}); 
                       },
@@ -1636,6 +1680,19 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                   ],
                 ),
                 const SizedBox(height: 15),
+
+                const Text("Link Health / Status", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  children: [
+                    ChoiceChip(label: const Text("All"), selected: _selectedStatus == 'All', selectedColor: Colors.blueAccent, onSelected: (val) { setSheetState(() => _selectedStatus = 'All'); setState(() => _selectedItems.clear()); }),
+                    ChoiceChip(label: const Text("Working"), selected: _selectedStatus == 'working', selectedColor: Colors.green, onSelected: (val) { setSheetState(() => _selectedStatus = 'working'); setState(() => _selectedItems.clear()); }),
+                    ChoiceChip(label: const Text("Unavailable"), selected: _selectedStatus == 'unavailable', selectedColor: Colors.orange, onSelected: (val) { setSheetState(() => _selectedStatus = 'unavailable'); setState(() => _selectedItems.clear()); }),
+                    ChoiceChip(label: const Text("Kodi Error"), selected: _selectedStatus == 'kodi_error', selectedColor: Colors.orange, onSelected: (val) { setSheetState(() => _selectedStatus = 'kodi_error'); setState(() => _selectedItems.clear()); }),
+                  ],
+                ),
+                const SizedBox(height: 20),
 
                 const Text("Profile (Single Select)", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
                 const SizedBox(height: 10),
@@ -1756,22 +1813,40 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
       bool matchesProfile = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
       String itemSubject = item.groupTitle.contains(' - ') ? item.groupTitle.split(' - ').last.trim() : item.groupTitle.trim();
       bool matchesSubject = _selectedSubjects.isEmpty || _selectedSubjects.contains(itemSubject);
+      bool matchesStatus = _selectedStatus == 'All' || item.playStatus == _selectedStatus;
       bool matchesSearch = item.displayName.toLowerCase().contains(_searchQuery.toLowerCase());
       
-      return matchesProfile && matchesSubject && matchesSearch;
+      return matchesProfile && matchesSubject && matchesStatus && matchesSearch;
     }).toList();
+
+    bool isAllSelected = _selectedItems.length == filteredItems.length && filteredItems.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(_selectedItems.isEmpty ? "Manage TV Videos" : "${_selectedItems.length} Selected"),
         actions: _selectedItems.isNotEmpty ? [
+          IconButton(
+            icon: Icon(isAllSelected ? Icons.deselect : Icons.select_all, color: Colors.white),
+            tooltip: isAllSelected ? "Deselect All" : "Select All",
+            onPressed: () {
+              setState(() {
+                if (isAllSelected) {
+                  _selectedItems.clear();
+                } else {
+                  _selectedItems.addAll(filteredItems);
+                }
+              });
+            },
+          ),
+          if (_selectedItems.length == 1)
+            IconButton(icon: const Icon(Icons.play_circle_fill, color: Colors.redAccent), tooltip: "Play in YouTube", onPressed: () => _playInYouTube(_selectedItems.first.urlLine)),
           IconButton(icon: const Icon(Icons.edit, color: Colors.blueAccent), tooltip: "Change Category", onPressed: _showBatchRenameDialog),
           IconButton(icon: const Icon(Icons.delete, color: Colors.red), tooltip: "Delete Selected", onPressed: _deleteSelectedItems),
         ] : [
           IconButton(
             icon: Icon(
-              (_selectedFilter == 'All' && _selectedSubjects.isEmpty) ? Icons.filter_list : Icons.filter_list_alt, 
-              color: (_selectedFilter == 'All' && _selectedSubjects.isEmpty) ? Colors.white : Colors.blueAccent
+              (_selectedFilter == 'All' && _selectedSubjects.isEmpty && _selectedStatus == 'All') ? Icons.filter_list : Icons.filter_list_alt, 
+              color: (_selectedFilter == 'All' && _selectedSubjects.isEmpty && _selectedStatus == 'All') ? Colors.white : Colors.blueAccent
             ),
             tooltip: "Filter",
             onPressed: _showGlobalFilters, 
@@ -1839,7 +1914,13 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(item.displayName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                Row(
+                                  children: [
+                                    if (item.playStatus == 'unavailable') const Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 16)),
+                                    if (item.playStatus == 'kodi_error') const Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.volume_off, color: Colors.orange, size: 16)),
+                                    Expanded(child: Text(item.displayName, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: item.playStatus != 'working' ? Colors.grey : Colors.white))),
+                                  ],
+                                ),
                                 const SizedBox(height: 4),
                                 Text(item.groupTitle, style: const TextStyle(color: Colors.orangeAccent, fontSize: 13)),
                               ],
@@ -1868,5 +1949,6 @@ class M3uItem {
   String urlLine; 
   String groupTitle;
   String displayName;
-  M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName});
+  String playStatus;
+  M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName, this.playStatus = 'working'});
 }
