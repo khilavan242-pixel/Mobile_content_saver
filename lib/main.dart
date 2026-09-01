@@ -845,16 +845,6 @@ class _PromptManagerScreenState extends State<PromptManagerScreen> {
 // ============================================================================
 // PLAYLIST MANAGER (WORLD-CLASS UI: SEARCH, EDIT, YOUTUBE PLAY, FILTERS)
 // ============================================================================
-class PlaylistManagerScreen extends StatefulWidget {
-  final String m3uPath;
-  final List<String> childrenProfiles;
-
-  const PlaylistManagerScreen({Key? key, required this.m3uPath, required this.childrenProfiles}) : super(key: key);
-
-  @override
-  _PlaylistManagerScreenState createState() => _PlaylistManagerScreenState();
-}
-
 class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   String _selectedFilter = 'All';
   String _searchQuery = '';
@@ -893,10 +883,10 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     setState(() => _playlistItems = items);
   }
 
-  // --- AUTO CHAPTER CORRECTION LOGIC (Preserved) ---
+  // --- AUTO CHAPTER CORRECTION LOGIC ---
   void _reorderChapters(String groupTitle) {
     int currentChapter = 1;
-    for (var item in _playlistItems) {
+    for (M3uItem item in _playlistItems) {
       if (item.groupTitle == groupTitle) {
         String cleanName = item.displayName.replaceFirst(RegExp(r'^CH\d+:\s*'), '').trim();
         String newName = "CH$currentChapter: $cleanName";
@@ -910,17 +900,18 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
 
   Future<void> _savePlaylistToFile() async {
     String newContent = "#EXTM3U\n";
-    for (var item in _playlistItems) {
+    for (M3uItem item in _playlistItems) {
       newContent += '\n${item.infoLine}\n${item.urlLine}\n';
     }
     await File(widget.m3uPath).writeAsString(newContent);
   }
 
   Future<void> _deleteSelectedItems() async {
-    Set<String> affectedGroups = _selectedItems.map((M3uItem e) => e.groupTitle).toSet();
+    // STRICT TYPING APPLIED HERE
+    Set<String> affectedGroups = _selectedItems.map<String>((M3uItem e) => e.groupTitle).toSet();
     
     setState(() {
-      _playlistItems.removeWhere((item) => _selectedItems.contains(item));
+      _playlistItems.removeWhere((M3uItem item) => _selectedItems.contains(item));
       _selectedItems.clear();
     });
 
@@ -941,7 +932,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     if (match != null) {
       videoId = match.group(1)!;
     } else {
-      // Fallback if standard YouTube link is in the M3U
       RegExp fallbackReg = RegExp(r'(?:v=|youtu\.be\/|vi\/)([a-zA-Z0-9_-]{11})');
       var fbMatch = fallbackReg.firstMatch(urlLine);
       if (fbMatch != null) videoId = fbMatch.group(1)!;
@@ -992,7 +982,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
           ElevatedButton(
             onPressed: () async {
               setState(() {
-                // Update item data securely
                 item.infoLine = item.infoLine.replaceAll(item.displayName, titleCtrl.text.trim());
                 item.infoLine = item.infoLine.replaceAll('group-title="${item.groupTitle}"', 'group-title="${groupCtrl.text.trim()}"');
                 
@@ -1073,7 +1062,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                       setSheetState(() {});
                     },
                   ),
-                  ...widget.childrenProfiles.map((c) => ChoiceChip(
+                  ...widget.childrenProfiles.map((String c) => ChoiceChip(
                     label: Text(c),
                     selected: _selectedFilter == c,
                     selectedColor: Colors.blueAccent,
@@ -1100,7 +1089,8 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   }
 
   void _showBatchRenameDialog() {
-    List<String> currentGroups = _playlistItems.map((M3uItem e) => e.groupTitle).toSet().toList();
+    // STRICT TYPING APPLIED HERE
+    List<String> currentGroups = _playlistItems.map<String>((M3uItem e) => e.groupTitle).toSet().toList();
     if (currentGroups.isEmpty) return;
     String newGroupCtrl = currentGroups.first;
 
@@ -1112,16 +1102,17 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
           content: DropdownButtonFormField<String>(
             value: newGroupCtrl,
             isExpanded: true,
-            items: currentGroups.map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
+            items: currentGroups.map((String g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
             onChanged: (val) => setDialogState(() => newGroupCtrl = val!),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
             ElevatedButton(
               onPressed: () async {
-                Set<String> oldGroups = _selectedItems.map((M3uItem e) => e.groupTitle).toSet();
+                // STRICT TYPING APPLIED HERE
+                Set<String> oldGroups = _selectedItems.map<String>((M3uItem e) => e.groupTitle).toSet();
                 setState(() {
-                  for (var item in _selectedItems) {
+                  for (M3uItem item in _selectedItems) {
                     item.infoLine = item.infoLine.replaceAll('group-title="${item.groupTitle}"', 'group-title="$newGroupCtrl"');
                     item.groupTitle = newGroupCtrl;
                   }
@@ -1142,7 +1133,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Apply Search and Filters
+    // STRICT TYPING APPLIED HERE
     List<M3uItem> filteredItems = _playlistItems.where((M3uItem item) {
       bool matchesFilter = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
       bool matchesSearch = item.displayName.toLowerCase().contains(_searchQuery.toLowerCase());
@@ -1159,13 +1150,12 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
           IconButton(
             icon: Icon(_selectedFilter == 'All' ? Icons.filter_list : Icons.filter_list_alt, color: _selectedFilter == 'All' ? Colors.white : Colors.blueAccent),
             tooltip: "Filter",
-            onPressed: _showGlobalFilters, // World Class Bottom Sheet Filter
+            onPressed: _showGlobalFilters, 
           )
         ],
       ),
       body: Column(
         children: [
-          // Sleek Search Bar
           Padding(
             padding: const EdgeInsets.all(12.0),
             child: TextField(
@@ -1190,7 +1180,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
               : ListView.builder(
               itemCount: filteredItems.length,
               itemBuilder: (context, index) {
-                var item = filteredItems[index];
+                M3uItem item = filteredItems[index];
                 bool isSelected = _selectedItems.contains(item);
 
                 return Card(
@@ -1204,7 +1194,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                       if (_selectedItems.isNotEmpty) {
                         setState(() { isSelected ? _selectedItems.remove(item) : _selectedItems.add(item); });
                       } else {
-                        _playInYouTube(item.urlLine); // Tap to play if not selecting
+                        _playInYouTube(item.urlLine);
                       }
                     },
                     onLongPress: () {
@@ -1251,7 +1241,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
 
 class M3uItem {
   String infoLine;
-  String urlLine; // Removed 'final' so we can edit it
+  String urlLine; 
   String groupTitle;
   String displayName;
   M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName});
