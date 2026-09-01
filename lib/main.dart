@@ -917,7 +917,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   }
 
   Future<void> _deleteSelectedItems() async {
-    Set<String> affectedGroups = _selectedItems.map((e) => e.groupTitle).toSet();
+    Set<String> affectedGroups = _selectedItems.map((M3uItem e) => e.groupTitle).toSet();
     
     setState(() {
       _playlistItems.removeWhere((item) => _selectedItems.contains(item));
@@ -1100,7 +1100,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   }
 
   void _showBatchRenameDialog() {
-    List<String> currentGroups = _playlistItems.map((e) => e.groupTitle).toSet().toList();
+    List<String> currentGroups = _playlistItems.map((M3uItem e) => e.groupTitle).toSet().toList();
     if (currentGroups.isEmpty) return;
     String newGroupCtrl = currentGroups.first;
 
@@ -1119,7 +1119,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
             ElevatedButton(
               onPressed: () async {
-                Set<String> oldGroups = _selectedItems.map((e) => e.groupTitle).toSet();
+                Set<String> oldGroups = _selectedItems.map((M3uItem e) => e.groupTitle).toSet();
                 setState(() {
                   for (var item in _selectedItems) {
                     item.infoLine = item.infoLine.replaceAll('group-title="${item.groupTitle}"', 'group-title="$newGroupCtrl"');
@@ -1143,7 +1143,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   @override
   Widget build(BuildContext context) {
     // Apply Search and Filters
-    List<M3uItem> filteredItems = _playlistItems.where((item) {
+    List<M3uItem> filteredItems = _playlistItems.where((M3uItem item) {
       bool matchesFilter = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
       bool matchesSearch = item.displayName.toLowerCase().contains(_searchQuery.toLowerCase());
       return matchesFilter && matchesSearch;
