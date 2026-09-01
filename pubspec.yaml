@@ -1,4 +1,4 @@
-name: Homework_Companion
+name: homework_companion
 description: A companion app to generate and save homework files.
 publish_to: 'none'
 version: 1.0.0+1
