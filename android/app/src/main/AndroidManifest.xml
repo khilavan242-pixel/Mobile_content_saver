@@ -17,7 +17,7 @@
     </queries>
 
     <application
-        android:label="homework_companion"
+        android:label="Homework_Companion"
         android:name="${applicationName}" 
         android:icon="@mipmap/ic_launcher">
         
