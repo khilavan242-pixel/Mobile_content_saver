@@ -30,6 +30,9 @@ class HomeworkCompanionApp extends StatelessWidget {
   }
 }
 
+// ============================================================================
+// GENERATOR SCREEN
+// ============================================================================
 class GeneratorScreen extends StatefulWidget {
   const GeneratorScreen({Key? key}) : super(key: key);
 
@@ -40,7 +43,6 @@ class GeneratorScreen extends StatefulWidget {
 class _GeneratorScreenState extends State<GeneratorScreen> {
   String? _basePath; 
 
-  // --- Dynamic Form State ---
   List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
   String _selectedSubject = 'English';
 
@@ -61,7 +63,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     _initializeApp();
   }
 
-  // --- Core Permissions & Folder Setup ---
   Future<void> _initializeApp() async {
     if (!await Permission.manageExternalStorage.isGranted) {
       await Permission.manageExternalStorage.request();
@@ -94,7 +95,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     }
   }
 
-  // --- Unified Save/Load Logic ---
   Future<void> _loadCustomData() async {
     if (_basePath == null) return;
 
@@ -102,14 +102,12 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
       final dir = Directory(_basePath!);
       if (!await dir.exists()) await dir.create(recursive: true);
 
-      // Load Subjects
       final subFile = File('${dir.path}/saved_subjects.txt');
       if (await subFile.exists()) {
         final subLines = await subFile.readAsLines();
         if (subLines.isNotEmpty) _subjects = subLines;
       }
 
-      // Load File Types
       final typeFile = File('${dir.path}/saved_types.txt');
       if (await typeFile.exists()) {
         final typeLines = await typeFile.readAsLines();
@@ -135,7 +133,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     }
   }
 
-  // --- Subject Management ---
   void _showAddSubjectDialog() {
     TextEditingController newSubjectCtrl = TextEditingController();
     showDialog(
@@ -198,7 +195,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     );
   }
 
-  // --- File Type Management ---
   void _showAddTypeDialog() {
     TextEditingController newTypeCtrl = TextEditingController();
     showDialog(
@@ -231,7 +227,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     );
   }
 
-  // --- Image Handling ---
   Future<void> _pickFromGallery() async {
     final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
     if (image != null) {
@@ -249,7 +244,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     }
   }
 
-  // --- Logic & Saving ---
   String _buildFilePath() {
     String chapter = "ch${_chapterCtrl.text.padLeft(2, '0')}";
     String type = _selectedFileType;
@@ -330,7 +324,6 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
     ));
   }
 
-  // --- UI Layout ---
   @override
   Widget build(BuildContext context) {
     if (_basePath == null) {
@@ -559,7 +552,7 @@ class _GeneratorScreenState extends State<GeneratorScreen> {
 }
 
 // ============================================================================
-// HOMEWORK FILE MANAGER (Review, Edit, Delete Quizzes & Images)
+// HOMEWORK FILE MANAGER
 // ============================================================================
 class HomeworkFileManagerScreen extends StatefulWidget {
   final String basePath;
@@ -1407,6 +1400,7 @@ class PlaylistManagerScreen extends StatefulWidget {
 
 class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   String _selectedFilter = 'All';
+  Set<String> _selectedSubjects = {}; 
   String _searchQuery = '';
   List<M3uItem> _playlistItems = [];
   Set<M3uItem> _selectedItems = {};
@@ -1443,7 +1437,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     setState(() => _playlistItems = items);
   }
 
-  // --- AUTO CHAPTER CORRECTION LOGIC ---
   void _reorderChapters(String groupTitle) {
     int currentChapter = 1;
     for (M3uItem item in _playlistItems) {
@@ -1482,7 +1475,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Videos deleted & chapters corrected!"), backgroundColor: Colors.redAccent));
   }
 
-  // --- PLAY IN YOUTUBE APP ---
   Future<void> _playInYouTube(String urlLine) async {
     String videoId = "";
     RegExp regExp = RegExp(r'video_id=([a-zA-Z0-9_-]{11})');
@@ -1514,7 +1506,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     }
   }
 
-  // --- M3U RAW ENTRY EDITOR ---
   void _showEditDialog(M3uItem item) {
     TextEditingController titleCtrl = TextEditingController(text: item.displayName);
     TextEditingController groupCtrl = TextEditingController(text: item.groupTitle);
@@ -1561,7 +1552,6 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     );
   }
 
-  // --- ITEM BOTTOM SHEET (MODERN LONG-PRESS MENU) ---
   void _showItemBottomSheet(M3uItem item) {
     showModalBottomSheet(
       context: context,
@@ -1596,53 +1586,125 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
     );
   }
 
-  // --- GLOBAL FILTERS BOTTOM SHEET ---
   void _showGlobalFilters() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true, 
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text("Filter by Profile", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 10,
-                children: [
-                  ChoiceChip(
-                    label: const Text("All"),
-                    selected: _selectedFilter == 'All',
-                    selectedColor: Colors.blueAccent,
-                    onSelected: (val) {
-                      setState(() { _selectedFilter = 'All'; _selectedItems.clear(); });
-                      setSheetState(() {});
-                    },
-                  ),
-                  ...widget.childrenProfiles.map((String c) => ChoiceChip(
-                    label: Text(c),
-                    selected: _selectedFilter == c,
-                    selectedColor: Colors.blueAccent,
-                    onSelected: (val) {
-                      setState(() { _selectedFilter = c; _selectedItems.clear(); });
-                      setSheetState(() {});
+        builder: (context, setSheetState) {
+          
+          Set<String> dynamicSubjects = {};
+          for (M3uItem item in _playlistItems) {
+            if (item.groupTitle.contains(' - ')) {
+              dynamicSubjects.add(item.groupTitle.split(' - ').last.trim());
+            } else {
+              dynamicSubjects.add(item.groupTitle.trim());
+            }
+          }
+
+          int liveCount = _playlistItems.where((M3uItem item) {
+            bool matchesProfile = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
+            String itemSubject = item.groupTitle.contains(' - ') ? item.groupTitle.split(' - ').last.trim() : item.groupTitle.trim();
+            bool matchesSubject = _selectedSubjects.isEmpty || _selectedSubjects.contains(itemSubject);
+            bool matchesSearch = item.displayName.toLowerCase().contains(_searchQuery.toLowerCase());
+            return matchesProfile && matchesSubject && matchesSearch;
+          }).length;
+
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom, top: 20, left: 20, right: 20
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("Filters", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                    TextButton(
+                      onPressed: () {
+                        setSheetState(() {
+                          _selectedFilter = 'All';
+                          _selectedSubjects.clear();
+                        });
+                        setState(() {}); 
+                      },
+                      child: const Text("Reset All", style: TextStyle(color: Colors.redAccent)),
+                    )
+                  ],
+                ),
+                const SizedBox(height: 15),
+
+                const Text("Profile (Single Select)", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  children: [
+                    ChoiceChip(
+                      label: const Text("All"),
+                      selected: _selectedFilter == 'All',
+                      selectedColor: Colors.blueAccent,
+                      onSelected: (val) {
+                        setSheetState(() => _selectedFilter = 'All');
+                        setState(() => _selectedItems.clear());
+                      },
+                    ),
+                    ...widget.childrenProfiles.map((String c) => ChoiceChip(
+                      label: Text(c),
+                      selected: _selectedFilter == c,
+                      selectedColor: Colors.blueAccent,
+                      onSelected: (val) {
+                        setSheetState(() => _selectedFilter = c);
+                        setState(() => _selectedItems.clear());
+                      },
+                    )).toList(),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
+                const Text("Subject (Multi-Select)", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 5,
+                  children: dynamicSubjects.map((String sub) => FilterChip(
+                    label: Text(sub),
+                    selected: _selectedSubjects.contains(sub),
+                    selectedColor: Colors.blueAccent.withOpacity(0.5),
+                    checkmarkColor: Colors.white,
+                    onSelected: (bool selected) {
+                      setSheetState(() {
+                        if (selected) {
+                          _selectedSubjects.add(sub);
+                        } else {
+                          _selectedSubjects.remove(sub);
+                        }
+                      });
+                      setState(() => _selectedItems.clear());
                     },
                   )).toList(),
-                ],
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text("Done"),
                 ),
-              )
-            ],
-          ),
-        ),
+                const SizedBox(height: 30),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blueAccent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
+                    ),
+                    child: Text("Show $liveCount Videos", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+            ),
+          );
+        }
       ),
     );
   }
@@ -1691,9 +1753,12 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   @override
   Widget build(BuildContext context) {
     List<M3uItem> filteredItems = _playlistItems.where((M3uItem item) {
-      bool matchesFilter = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
+      bool matchesProfile = _selectedFilter == 'All' || item.groupTitle.startsWith(_selectedFilter);
+      String itemSubject = item.groupTitle.contains(' - ') ? item.groupTitle.split(' - ').last.trim() : item.groupTitle.trim();
+      bool matchesSubject = _selectedSubjects.isEmpty || _selectedSubjects.contains(itemSubject);
       bool matchesSearch = item.displayName.toLowerCase().contains(_searchQuery.toLowerCase());
-      return matchesFilter && matchesSearch;
+      
+      return matchesProfile && matchesSubject && matchesSearch;
     }).toList();
 
     return Scaffold(
@@ -1704,7 +1769,10 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
           IconButton(icon: const Icon(Icons.delete, color: Colors.red), tooltip: "Delete Selected", onPressed: _deleteSelectedItems),
         ] : [
           IconButton(
-            icon: Icon(_selectedFilter == 'All' ? Icons.filter_list : Icons.filter_list_alt, color: _selectedFilter == 'All' ? Colors.white : Colors.blueAccent),
+            icon: Icon(
+              (_selectedFilter == 'All' && _selectedSubjects.isEmpty) ? Icons.filter_list : Icons.filter_list_alt, 
+              color: (_selectedFilter == 'All' && _selectedSubjects.isEmpty) ? Colors.white : Colors.blueAccent
+            ),
             tooltip: "Filter",
             onPressed: _showGlobalFilters, 
           )
@@ -1802,4 +1870,3 @@ class M3uItem {
   String displayName;
   M3uItem({required this.infoLine, required this.urlLine, required this.groupTitle, required this.displayName});
 }
-
