@@ -6,7 +6,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'youtube_lists.dart';
+import 'm3u_files.dart';
+import 'youtube_core.dart';
 
 const Color kAccent = Color(0xFF8B5CF6); // violet, matches the app icon
 const Color kBg = Color(0xFF0F0B1E);
@@ -198,7 +199,7 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
 }
 
 // ============================================================================
-// HOME: two tabs - Kodi TV Manager and YouTube Lists
+// HOME: two tabs - Kodi TV Manager and M3U Files
 // ============================================================================
 class HomeShell extends StatefulWidget {
   final String basePath;
@@ -219,7 +220,7 @@ class _HomeShellState extends State<HomeShell> {
         index: _index,
         children: [
           KodiTvScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
-          YouTubeListsScreen(basePath: widget.basePath),
+          M3uFilesScreen(basePath: widget.basePath),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -227,7 +228,7 @@ class _HomeShellState extends State<HomeShell> {
         onDestinationSelected: (i) => setState(() => _index = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.tv_outlined), selectedIcon: Icon(Icons.tv), label: 'Kodi TV'),
-          NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library), label: 'YouTube Lists'),
+          NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library), label: 'M3U Files'),
         ],
       ),
     );
@@ -259,6 +260,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
   String _selectedSubject = 'English';
 
   late String m3uPath;
+  String? _busy; // progress text while a playlist is being read
   String _lastClipboardText = "";
 
   @override
@@ -551,55 +553,89 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
       return;
     }
 
-    RegExp regex = RegExp(r'(?:v=|youtu\.be\/|shorts\/|embed\/|video_id=|vi\/)([a-zA-Z0-9_-]{11})');
-    Iterable<RegExpMatch> matches = regex.allMatches(rawText);
-    List<String> incomingIds = matches.map((m) => m.group(1)!).toSet().toList();
-
-    if (incomingIds.isEmpty) {
+    final parsed = parseYtText(rawText);
+    if (parsed.isEmpty) {
       _showSnackBar("No valid YouTube links found in text!", success: false);
       return;
     }
 
+    // Videos are used as they are; playlists are expanded into all their videos.
+    setState(() => _busy = parsed.any((e) => e.isPlaylist) ? "Reading playlist…" : "Saving…");
+    final List<YtItem> videos = [];
+    final List<String> notes = [];
+    final Set<String> seenKeys = {};
+    try {
+      for (final it in parsed) {
+        if (!it.isPlaylist) {
+          if (seenKeys.add(it.key)) videos.add(it);
+          continue;
+        }
+        final res = await fetchPlaylist(it.id, onProgress: (n) {
+          if (mounted) setState(() => _busy = "Reading playlist… $n videos");
+        });
+        if (res.videos.isEmpty) {
+          // Could not read it: keep one playlist entry so it can still be played from Kodi.
+          notes.add(res.error ?? "Playlist could not be read.");
+          if (seenKeys.add(it.key)) videos.add(it);
+        } else {
+          if (res.error != null) notes.add(res.error!);
+          for (final v in res.videos) {
+            if (seenKeys.add(v.key)) videos.add(v);
+          }
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+
     int currentChapter = int.tryParse(_chapterCtrl.text) ?? 1;
     String customName = _customNameCtrl.text.trim();
-    
+
     int addedCount = 0;
     int dupCount = 0;
     String newEntries = "";
 
-    for (int i = 0; i < incomingIds.length; i++) {
-      String videoId = incomingIds[i];
-
-      if (existingContent.contains(videoId)) {
+    for (final v in videos) {
+      final String dupKey = v.isPlaylist ? 'playlist_id=${v.id}' : 'video_id=${v.id}';
+      if (existingContent.contains(dupKey)) {
         dupCount++;
         continue;
       }
 
-      String titlePart = customName.isNotEmpty ? customName : "$_selectedSubject Lesson";
-      if (incomingIds.length > 1) {
-        titlePart += " (Part ${i + 1})";
+      String titlePart;
+      if (customName.isNotEmpty) {
+        titlePart = videos.length > 1 ? "$customName (Part ${addedCount + 1})" : customName;
+      } else if (v.hasRealTitle) {
+        titlePart = v.title;
+      } else {
+        titlePart = v.isPlaylist ? "$_selectedSubject Playlist" : "$_selectedSubject Lesson";
       }
+      // M3U title is the text after the last comma, so commas/new lines must go.
+      titlePart = titlePart.replaceAll(RegExp(r'[\r\n]+'), ' ').replaceAll(',', ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
 
       String finalTitle = _chapterCtrl.text.trim().isNotEmpty ? "CH$currentChapter: $titlePart" : titlePart;
-      
-      newEntries += '\n#EXTINF:-1 group-title="$forcedGroupTitle" play-status="working" tvg-logo="https://img.youtube.com/vi/$videoId/hqdefault.jpg", $finalTitle\n';
-      newEntries += 'plugin://plugin.video.youtube/play/?video_id=$videoId\n';
+      String logo = v.isPlaylist ? '' : 'https://img.youtube.com/vi/${v.id}/hqdefault.jpg';
+
+      newEntries += '\n#EXTINF:-1 group-title="$forcedGroupTitle" play-status="working" tvg-logo="$logo", $finalTitle\n';
+      newEntries += '${v.kodiUrl}\n';
       addedCount++;
       currentChapter++;
+      existingContent += dupKey;
     }
 
     if (addedCount > 0) {
       try {
         await m3uFile.writeAsString(newEntries, mode: FileMode.append);
-        _showSnackBar("✅ Success! Added $addedCount new video(s). (Skipped $dupCount duplicates)", success: true);
+        final extra = notes.isEmpty ? "" : "\n${notes.first}";
+        _showSnackBar("✅ Success! Added $addedCount new video(s). (Skipped $dupCount duplicates)$extra", success: notes.isEmpty);
         _urlCtrl.clear();
         _customNameCtrl.clear();
-        _autoCalculateChapter(); 
+        _autoCalculateChapter();
       } catch (e) {
         _showSnackBar("Error saving to file: $e");
       }
     } else {
-      _showSnackBar("All found links were already in your TV playlist!", success: false);
+      _showSnackBar(notes.isNotEmpty ? notes.first : "All found links were already in your TV playlist!", success: false);
     }
   }
 
@@ -816,14 +852,16 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
                 gradient: const LinearGradient(colors: [Color(0xFF7C3AED), Color(0xFFEC4899)]),
               ),
               child: ElevatedButton.icon(
-                onPressed: _saveToKodi,
-                icon: const Icon(Icons.cast, color: Colors.white),
+                onPressed: _busy == null ? _saveToKodi : null,
+                icon: _busy == null
+                    ? const Icon(Icons.cast, color: Colors.white)
+                    : const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.transparent,
                   shadowColor: Colors.transparent,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 ),
-                label: const Text("Build & Save to TV", style: TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
+                label: Text(_busy ?? "Build & Save to TV", style: TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ),
             const SizedBox(height: 14),
@@ -947,6 +985,15 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
   }
 
   Future<void> _playInYouTube(String urlLine) async {
+    final plMatch = RegExp(r'playlist_id=([A-Za-z0-9_-]+)').firstMatch(urlLine);
+    if (plMatch != null) {
+      try {
+        await launchUrl(Uri.parse('https://www.youtube.com/playlist?list=${plMatch.group(1)}'), mode: LaunchMode.externalApplication);
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Could not open YouTube."), backgroundColor: Colors.red));
+      }
+      return;
+    }
     String videoId = "";
     RegExp regExp = RegExp(r'video_id=([a-zA-Z0-9_-]{11})');
     var match = regExp.firstMatch(urlLine);
