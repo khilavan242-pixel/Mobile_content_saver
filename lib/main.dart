@@ -1,1043 +1,237 @@
 import 'dart:io';
-import 'dart:typed_data';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:pasteboard/pasteboard.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-void main() {
-  runApp(const HomeworkCompanionApp());
+import 'youtube_lists.dart';
+
+const Color kAccent = Color(0xFF8B5CF6); // violet, matches the app icon
+const Color kBg = Color(0xFF0F0B1E);
+const Color kSurface = Color(0xFF1B1633);
+
+ThemeData _buildTheme() {
+  final scheme = ColorScheme.fromSeed(
+    seedColor: const Color(0xFF7C3AED),
+    brightness: Brightness.dark,
+  ).copyWith(primary: kAccent, surface: kSurface);
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: kBg,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: kBg,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: false,
+      titleTextStyle: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: Colors.white),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: kSurface,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: kAccent, width: 1.6)),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: kSurface,
+      indicatorColor: kAccent.withOpacity(0.35),
+    ),
+    chipTheme: ChipThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+  );
 }
 
-class HomeworkCompanionApp extends StatelessWidget {
-  const HomeworkCompanionApp({Key? key}) : super(key: key);
+void main() {
+  runApp(const KodiTvManagerApp());
+}
+
+class KodiTvManagerApp extends StatelessWidget {
+  const KodiTvManagerApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Homework Companion',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        brightness: Brightness.dark,
-      ),
-      home: const GeneratorScreen(),
+      title: 'TubeBox',
+      debugShowCheckedModeBanner: false,
+      theme: _buildTheme(),
+      home: const StartupGate(),
     );
   }
 }
 
 // ============================================================================
-// GENERATOR SCREEN
+// STARTUP: storage permission + choose the Kodi folder (remembered)
 // ============================================================================
-class GeneratorScreen extends StatefulWidget {
-  const GeneratorScreen({Key? key}) : super(key: key);
+class StartupGate extends StatefulWidget {
+  const StartupGate({Key? key}) : super(key: key);
 
   @override
-  _GeneratorScreenState createState() => _GeneratorScreenState();
+  _StartupGateState createState() => _StartupGateState();
 }
 
-class _GeneratorScreenState extends State<GeneratorScreen> {
-  String? _basePath; 
-
-  List<String> _subjects = ['English', 'Math', 'Science', 'History', 'Art'];
-  String _selectedSubject = 'English';
-
-  List<String> _fileTypes = ['quiz', 'concept', 'image'];
-  String _selectedFileType = 'quiz';
-
-  final TextEditingController _chapterCtrl = TextEditingController(text: '1');
-  final TextEditingController _fileNumCtrl = TextEditingController(text: '1');
-  final TextEditingController _customNameCtrl = TextEditingController();
-  final TextEditingController _textContentCtrl = TextEditingController();
-
-  Uint8List? _imageBytes;
-  final ImagePicker _picker = ImagePicker();
+class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
+  String? _basePath;
+  bool _loading = true;
+  bool _permissionOk = false;
 
   @override
   void initState() {
     super.initState();
-    _initializeApp();
-  }
-
-  Future<void> _initializeApp() async {
-    if (!await Permission.manageExternalStorage.isGranted) {
-      await Permission.manageExternalStorage.request();
-    }
-    
-    if (await Permission.manageExternalStorage.isGranted) {
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      String? savedPath = prefs.getString('saved_base_path');
-
-      if (savedPath != null) {
-        setState(() {
-          _basePath = savedPath;
-        });
-        await _loadCustomData();
-      }
-    }
-  }
-
-  Future<void> _pickBaseFolder() async {
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
-
-    if (selectedDirectory != null) {
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      await prefs.setString('saved_base_path', selectedDirectory);
-      
-      setState(() {
-        _basePath = selectedDirectory;
-      });
-      await _loadCustomData();
-    }
-  }
-
-  Future<void> _loadCustomData() async {
-    if (_basePath == null) return;
-
-    try {
-      final dir = Directory(_basePath!);
-      if (!await dir.exists()) await dir.create(recursive: true);
-
-      final subFile = File('${dir.path}/saved_subjects.txt');
-      if (await subFile.exists()) {
-        final subLines = await subFile.readAsLines();
-        if (subLines.isNotEmpty) _subjects = subLines;
-      }
-
-      final typeFile = File('${dir.path}/saved_types.txt');
-      if (await typeFile.exists()) {
-        final typeLines = await typeFile.readAsLines();
-        if (typeLines.isNotEmpty) _fileTypes = typeLines;
-      }
-
-      setState(() {
-        if (!_subjects.contains(_selectedSubject)) _selectedSubject = _subjects.first;
-        if (!_fileTypes.contains(_selectedFileType)) _selectedFileType = _fileTypes.first;
-      });
-    } catch (e) {
-      debugPrint("Error loading data: $e");
-    }
-  }
-
-  Future<void> _saveDataList(List<String> list, String fileName) async {
-    if (_basePath == null) return;
-    try {
-      final file = File('$_basePath/$fileName');
-      await file.writeAsString(list.join('\n'));
-    } catch (e) {
-      _showSnackBar("Error saving list: $e");
-    }
-  }
-
-  void _showAddSubjectDialog() {
-    TextEditingController newSubjectCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Add New Subject"),
-        content: TextField(
-          controller: newSubjectCtrl,
-          textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(hintText: "e.g. Hindi, GK", border: OutlineInputBorder()),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () {
-              String newSub = newSubjectCtrl.text.trim();
-              if (newSub.isNotEmpty && !_subjects.contains(newSub)) {
-                setState(() {
-                  _subjects.add(newSub);
-                  _selectedSubject = newSub;
-                });
-                _saveDataList(_subjects, 'saved_subjects.txt');
-              }
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
-            child: const Text("Add", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _deleteCurrentSubject() {
-    if (_subjects.length <= 1) {
-      _showSnackBar("You must have at least one subject!");
-      return;
-    }
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Delete Subject?"),
-        content: Text("Remove '$_selectedSubject' from your list?"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                _subjects.remove(_selectedSubject);
-                _selectedSubject = _subjects.first;
-              });
-              _saveDataList(_subjects, 'saved_subjects.txt');
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text("Delete", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showAddTypeDialog() {
-    TextEditingController newTypeCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Add New File Type"),
-        content: TextField(
-          controller: newTypeCtrl,
-          decoration: const InputDecoration(hintText: "e.g. worksheet, summary", border: OutlineInputBorder()),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () {
-              String newType = newTypeCtrl.text.trim().toLowerCase().replaceAll(' ', '_');
-              if (newType.isNotEmpty && !_fileTypes.contains(newType)) {
-                setState(() {
-                  _fileTypes.add(newType);
-                  _selectedFileType = newType;
-                });
-                _saveDataList(_fileTypes, 'saved_types.txt');
-              }
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
-            child: const Text("Add", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _pickFromGallery() async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
-      final bytes = await image.readAsBytes();
-      setState(() => _imageBytes = bytes);
-    }
-  }
-
-  Future<void> _pasteFromClipboard() async {
-    final bytes = await Pasteboard.image;
-    if (bytes != null) {
-      setState(() => _imageBytes = bytes);
-    } else {
-      _showSnackBar("No image found on clipboard!");
-    }
-  }
-
-  String _buildFilePath() {
-    String chapter = "ch${_chapterCtrl.text.padLeft(2, '0')}";
-    String type = _selectedFileType;
-    String num = _fileNumCtrl.text;
-
-    String customName = _customNameCtrl.text.trim();
-    String suffix = customName.isNotEmpty ? "_${customName.replaceAll(' ', '_')}" : "";
-
-    String extension = type == 'quiz' ? '.json' : (type == 'image' ? '.jpg' : '.txt');
-    String fileName = "${chapter}_${type}_${num}$suffix$extension".toLowerCase();
-
-    String dirPath = "$_basePath/$_selectedSubject";
-    return "$dirPath/$fileName";
-  }
-
-  Future<void> _handleSave() async {
-    if (_basePath == null) {
-      _showSnackBar("Please select a base folder first.");
-      return;
-    }
-
-    if (!await Permission.manageExternalStorage.isGranted) {
-      _showSnackBar("Storage permission is required to save files.");
-      await Permission.manageExternalStorage.request();
-      return;
-    }
-
-    String fullPath = _buildFilePath();
-    File targetFile = File(fullPath);
-
-    if (await targetFile.exists()) {
-      bool? overwrite = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text("File Exists"),
-          content: Text("A file named\n${fullPath.split('/').last}\nalready exists. Overwrite it?"),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
-            ElevatedButton(onPressed: () => Navigator.pop(context, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.red), child: const Text("Overwrite")),
-          ],
-        ),
-      );
-      if (overwrite != true) return;
-    }
-
-    Directory dir = Directory(fullPath.substring(0, fullPath.lastIndexOf('/')));
-    if (!await dir.exists()) await dir.create(recursive: true);
-
-    try {
-      if (_selectedFileType == 'image') {
-        if (_imageBytes == null) {
-          _showSnackBar("Please select or paste an image first!");
-          return;
-        }
-        await targetFile.writeAsBytes(_imageBytes!);
-      } else {
-        if (_textContentCtrl.text.isEmpty) {
-          _showSnackBar("Please paste the text content first!");
-          return;
-        }
-        await targetFile.writeAsString(_textContentCtrl.text);
-      }
-      _showSnackBar("✅ Saved successfully to $_selectedSubject folder!", success: true);
-
-      _textContentCtrl.clear();
-      setState(() => _imageBytes = null);
-
-    } catch (e) {
-      _showSnackBar("Error saving file: $e");
-    }
-  }
-
-  void _showSnackBar(String message, {bool success = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(message),
-      backgroundColor: success ? Colors.green : Colors.redAccent,
-      duration: const Duration(seconds: 3),
-    ));
+    WidgetsBinding.instance.addObserver(this);
+    _init();
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (_basePath == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text("Setup Required"), centerTitle: true),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.folder_special, size: 80, color: Colors.blueAccent),
-                const SizedBox(height: 20),
-                const Text(
-                  "Where do you want to save your Homework and TV Playlist files?",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 18),
-                ),
-                const SizedBox(height: 30),
-                ElevatedButton(
-                  onPressed: _pickBaseFolder,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20)
-                  ),
-                  child: const Text("Choose Folder", style: TextStyle(fontSize: 20, color: Colors.white)),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Homework Generator"),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.smart_toy, color: Colors.greenAccent),
-            tooltip: "AI Prompts",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => PromptManagerScreen(basePath: _basePath!)),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.folder_open, color: Colors.yellowAccent),
-            tooltip: "Manage Saved Files",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => HomeworkFileManagerScreen(basePath: _basePath!, subjects: _subjects)),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.folder, color: Colors.white70),
-            tooltip: "Change Save Folder",
-            onPressed: _pickBaseFolder,
-          ),
-          IconButton(
-            icon: const Icon(Icons.tv, color: Colors.blueAccent),
-            tooltip: "Kodi TV Manager",
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => KodiTvScreen(basePath: _basePath!)),
-              );
-              _loadCustomData();
-            },
-          )
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: _selectedSubject,
-                    decoration: const InputDecoration(labelText: "Subject Folder", border: OutlineInputBorder()),
-                    items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-                    onChanged: (val) => setState(() => _selectedSubject = val!),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                InkWell(
-                  onTap: _showAddSubjectDialog,
-                  child: Container(
-                    height: 60, width: 50,
-                    decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blueAccent)),
-                    child: const Icon(Icons.add, color: Colors.blueAccent),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                InkWell(
-                  onTap: _deleteCurrentSubject,
-                  child: Container(
-                    height: 60, width: 50,
-                    decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.redAccent)),
-                    child: const Icon(Icons.delete, color: Colors.redAccent),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 15),
-
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _chapterCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: "Chapter No.", border: OutlineInputBorder()),
-                  ),
-                ),
-                const SizedBox(width: 15),
-                Expanded(
-                  child: TextField(
-                    controller: _fileNumCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: "File No.", border: OutlineInputBorder()),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 15),
-
-            TextField(
-              controller: _customNameCtrl,
-              decoration: const InputDecoration(labelText: "Custom Name (Optional)", hintText: "e.g. My Family", border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 20),
-
-            const Text("File Type:", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            Wrap(
-              spacing: 10,
-              runSpacing: 5,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                ..._fileTypes.map((t) => _buildRadio(t.toUpperCase(), t)).toList(),
-                TextButton.icon(
-                  onPressed: _showAddTypeDialog,
-                  icon: const Icon(Icons.add_circle, color: Colors.blueAccent),
-                  label: const Text("New Type", style: TextStyle(color: Colors.blueAccent)),
-                )
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            if (_selectedFileType != 'image')
-              TextField(
-                controller: _textContentCtrl,
-                maxLines: 8,
-                decoration: InputDecoration(
-                  labelText: "Paste ${_selectedFileType.toUpperCase()} Content Here",
-                  border: const OutlineInputBorder(),
-                  alignLabelWithHint: true,
-                ),
-              )
-            else
-              Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      ElevatedButton.icon(onPressed: _pickFromGallery, icon: const Icon(Icons.photo), label: const Text("Gallery")),
-                      ElevatedButton.icon(onPressed: _pasteFromClipboard, icon: const Icon(Icons.paste), label: const Text("Paste")),
-                    ],
-                  ),
-                  const SizedBox(height: 15),
-                  Container(
-                    height: 200,
-                    width: double.infinity,
-                    decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(10)),
-                    child: _imageBytes == null
-                        ? const Center(child: Text("No Image Selected"))
-                        : ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.memory(_imageBytes!, fit: BoxFit.cover)),
-                  ),
-                ],
-              ),
-
-            const SizedBox(height: 30),
-
-            SizedBox(
-              height: 60,
-              child: ElevatedButton(
-                onPressed: _handleSave,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))),
-                child: const Text("Generate & Save File", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
-              ),
-            ),
-            
-            const SizedBox(height: 10),
-            Text("Saving to: $_basePath", style: const TextStyle(fontSize: 10, color: Colors.grey), textAlign: TextAlign.center),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRadio(String label, String value) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Radio<String>(
-          value: value,
-          groupValue: _selectedFileType,
-          onChanged: (val) => setState(() {
-            _selectedFileType = val!;
-            _textContentCtrl.clear();
-            _imageBytes = null;
-          }),
-        ),
-        Text(label, style: const TextStyle(fontSize: 14)),
-      ],
-    );
-  }
-}
-
-// ============================================================================
-// HOMEWORK FILE MANAGER
-// ============================================================================
-class HomeworkFileManagerScreen extends StatefulWidget {
-  final String basePath;
-  final List<String> subjects;
-
-  const HomeworkFileManagerScreen({Key? key, required this.basePath, required this.subjects}) : super(key: key);
-
-  @override
-  _HomeworkFileManagerScreenState createState() => _HomeworkFileManagerScreenState();
-}
-
-class _HomeworkFileManagerScreenState extends State<HomeworkFileManagerScreen> {
-  late String _selectedSubject;
-  List<FileSystemEntity> _files = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedSubject = widget.subjects.isNotEmpty ? widget.subjects.first : '';
-    _loadFiles();
-  }
-
-  Future<void> _loadFiles() async {
-    if (_selectedSubject.isEmpty) return;
-    final dir = Directory('${widget.basePath}/$_selectedSubject');
-    if (await dir.exists()) {
-      setState(() {
-        _files = dir.listSync().where((f) => f is File).toList();
-      });
-    } else {
-      setState(() => _files = []);
-    }
-  }
-
-  void _openFile(File file) async {
-    String ext = file.path.split('.').last.toLowerCase();
-    
-    if (ext == 'jpg' || ext == 'png') {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          content: Image.file(file),
-          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
-        ),
-      );
-    } else if (ext == 'txt' || ext == 'json') {
-      String content = await file.readAsString();
-      TextEditingController editorCtrl = TextEditingController(text: content);
-      
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text("Editing: ${file.path.split('/').last}", style: const TextStyle(fontSize: 14)),
-          content: SingleChildScrollView(
-            child: TextField(
-              controller: editorCtrl,
-              maxLines: null,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-            ElevatedButton(
-              onPressed: () async {
-                await file.writeAsString(editorCtrl.text);
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File updated!"), backgroundColor: Colors.green));
-              },
-              child: const Text("Save Changes"),
-            )
-          ],
-        ),
-      );
-    }
-  }
-
-  Future<void> _deleteFile(File file) async {
-    await file.delete();
-    _loadFiles();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File deleted."), backgroundColor: Colors.redAccent));
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Manage Homework Files")),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(15),
-            child: DropdownButtonFormField<String>(
-              value: _selectedSubject,
-              decoration: const InputDecoration(labelText: "Select Subject Folder", border: OutlineInputBorder()),
-              items: widget.subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-              onChanged: (val) {
-                setState(() => _selectedSubject = val!);
-                _loadFiles();
-              },
-            ),
-          ),
-          Expanded(
-            child: _files.isEmpty 
-              ? const Center(child: Text("No files found in this folder."))
-              : ListView.builder(
-                  itemCount: _files.length,
-                  itemBuilder: (context, index) {
-                    File file = _files[index] as File;
-                    String fileName = file.path.split('/').last;
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      child: ListTile(
-                        leading: const Icon(Icons.insert_drive_file, color: Colors.yellowAccent),
-                        title: Text(fileName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: const Text("Tap to view or edit"),
-                        onTap: () => _openFile(file),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () => _deleteFile(file),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-          )
-        ],
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// PROMPT MANAGER (TEXT FILE METHOD & WORLD-CLASS UI)
-// ============================================================================
-class PromptManagerScreen extends StatefulWidget {
-  final String basePath;
-  const PromptManagerScreen({Key? key, required this.basePath}) : super(key: key);
-
-  @override
-  _PromptManagerScreenState createState() => _PromptManagerScreenState();
-}
-
-class _PromptManagerScreenState extends State<PromptManagerScreen> {
-  List<AiPrompt> _prompts = [];
-  String _selectedFilter = 'All';
-  final List<String> _categories = ['Kodi M3U', 'Quiz', 'Worksheet', 'General'];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadPromptsFromFolder();
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // User may have just granted "All files access" in system settings.
+    if (state == AppLifecycleState.resumed && !_permissionOk) {
+      _init();
+    }
   }
 
-  // --- 1. LOAD FROM TEXT FILES ---
-  Future<void> _loadPromptsFromFolder() async {
-    Directory promptDir = Directory('${widget.basePath}/AI_Prompts');
-    if (!await promptDir.exists()) {
-      await promptDir.create();
+  Future<void> _init() async {
+    var status = await Permission.manageExternalStorage.status;
+    if (!status.isGranted) {
+      status = await Permission.manageExternalStorage.request();
     }
-
-    List<FileSystemEntity> files = promptDir.listSync();
-    List<AiPrompt> loadedPrompts = [];
-
-    for (var entity in files) {
-      if (entity is File && entity.path.endsWith('.txt')) {
-        String fileName = entity.path.split('/').last.replaceAll('.txt', '');
-        
-        // Parse "Category - Title" format
-        String category = 'General';
-        String title = fileName;
-        
-        if (fileName.contains(' - ')) {
-          List<String> parts = fileName.split(' - ');
-          category = parts[0].trim();
-          title = parts.sublist(1).join(' - ').trim();
-        }
-
-        String content = await entity.readAsString();
-        loadedPrompts.add(AiPrompt(title: title, content: content, category: category, file: entity));
-      }
+    String? saved;
+    if (status.isGranted) {
+      final prefs = await SharedPreferences.getInstance();
+      saved = prefs.getString('saved_base_path');
     }
-    
+    if (!mounted) return;
     setState(() {
-      _prompts = loadedPrompts;
+      _permissionOk = status.isGranted;
+      _basePath = saved;
+      _loading = false;
     });
   }
 
-  // --- 2. SAVE OR EDIT TEXT FILE ---
-  Future<void> _savePrompt(String title, String content, String category, {File? existingFile}) async {
-    Directory promptDir = Directory('${widget.basePath}/AI_Prompts');
-    if (!await promptDir.exists()) await promptDir.create();
-
-    // Sanitize title to prevent file system errors
-    String cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
-    String newFileName = '$category - $cleanTitle.txt';
-    File newFile = File('${promptDir.path}/$newFileName');
-
-    // If editing and the name/category changed, delete the old file
-    if (existingFile != null && existingFile.path != newFile.path) {
-      if (await existingFile.exists()) {
-        await existingFile.delete();
-      }
-    }
-
-    // Save the new file
-    await newFile.writeAsString(content);
-    
-    // Refresh UI
-    _loadPromptsFromFolder();
-  }
-
-  Future<void> _deletePrompt(AiPrompt prompt) async {
-    if (await prompt.file.exists()) {
-      await prompt.file.delete();
-    }
-    setState(() => _prompts.remove(prompt));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Prompt deleted"), backgroundColor: Colors.redAccent));
-  }
-
-  Color _getCategoryColor(String category) {
-    switch (category) {
-      case 'Kodi M3U': return Colors.purpleAccent;
-      case 'Quiz': return Colors.orangeAccent;
-      case 'Worksheet': return Colors.greenAccent;
-      default: return Colors.blueAccent;
-    }
-  }
-
-  void _copyToClipboard(String content, String title) {
-    Clipboard.setData(ClipboardData(text: content));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("✅ '$title' copied!"),
-      backgroundColor: Colors.green,
-      duration: const Duration(seconds: 2),
-    ));
-  }
-
-  void _showAddEditDialog({AiPrompt? existingPrompt}) {
-    TextEditingController titleCtrl = TextEditingController(text: existingPrompt?.title ?? '');
-    TextEditingController contentCtrl = TextEditingController(text: existingPrompt?.content ?? '');
-    String currentCategory = existingPrompt?.category ?? 'General';
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(existingPrompt == null ? "Create New Prompt" : "Edit Prompt"),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: titleCtrl,
-                  decoration: const InputDecoration(labelText: "Prompt Title", border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 15),
-                const Text("Category:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                Wrap(
-                  spacing: 8,
-                  children: _categories.map((cat) => ChoiceChip(
-                    label: Text(cat, style: const TextStyle(fontSize: 12)),
-                    selected: currentCategory == cat,
-                    selectedColor: _getCategoryColor(cat).withOpacity(0.5),
-                    onSelected: (val) => setDialogState(() => currentCategory = cat),
-                  )).toList(),
-                ),
-                const SizedBox(height: 15),
-                TextField(
-                  controller: contentCtrl,
-                  maxLines: 6,
-                  decoration: const InputDecoration(labelText: "Prompt Instructions", border: OutlineInputBorder(), alignLabelWithHint: true),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-            ElevatedButton(
-              onPressed: () async {
-                if (titleCtrl.text.trim().isEmpty || contentCtrl.text.trim().isEmpty) return;
-                
-                await _savePrompt(
-                  titleCtrl.text.trim(), 
-                  contentCtrl.text.trim(), 
-                  currentCategory, 
-                  existingFile: existingPrompt?.file
-                );
-                
-                Navigator.pop(context);
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-              child: const Text("Save", style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showReaderSheet(AiPrompt prompt) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, top: 20, left: 20, right: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(child: Text(prompt.title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold))),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(color: _getCategoryColor(prompt.category).withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: _getCategoryColor(prompt.category))),
-                  child: Text(prompt.category, style: TextStyle(color: _getCategoryColor(prompt.category), fontSize: 12, fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 15),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(color: Colors.grey.shade900, borderRadius: BorderRadius.circular(12)),
-              child: Text(prompt.content, style: const TextStyle(fontSize: 16, height: 1.5)),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _deletePrompt(prompt);
-                  },
-                  icon: const Icon(Icons.delete, color: Colors.redAccent),
-                  label: const Text("Delete", style: TextStyle(color: Colors.redAccent)),
-                ),
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _showAddEditDialog(existingPrompt: prompt);
-                  },
-                  icon: const Icon(Icons.edit, color: Colors.blueAccent),
-                  label: const Text("Edit", style: TextStyle(color: Colors.blueAccent)),
-                ),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _copyToClipboard(prompt.content, prompt.title);
-                  },
-                  icon: const Icon(Icons.copy, color: Colors.white),
-                  label: const Text("Copy", style: TextStyle(color: Colors.white)),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-          ],
-        ),
-      ),
-    );
+  Future<void> _pickFolder() async {
+    final String? dir = await FilePicker.platform.getDirectoryPath();
+    if (dir == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_base_path', dir);
+    if (!mounted) return;
+    setState(() => _basePath = dir);
   }
 
   @override
   Widget build(BuildContext context) {
-    List<AiPrompt> filteredPrompts = _selectedFilter == 'All' 
-        ? _prompts 
-        : _prompts.where((p) => p.category == _selectedFilter).toList();
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
 
-    return Scaffold(
-      appBar: AppBar(title: const Text("AI Prompts Manager")),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-            color: Colors.grey.shade900,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _buildFilterChip('All'),
-                  ..._categories.map((cat) => _buildFilterChip(cat)).toList(),
-                ],
-              ),
+    if (!_permissionOk) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("TubeBox")),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.asset('assets/logo.png', width: 96, height: 96),
+                const SizedBox(height: 12),
+                const Icon(Icons.folder_off, size: 36, color: Colors.orangeAccent),
+                const SizedBox(height: 16),
+                const Text(
+                  "Storage access is needed to save your playlist and YouTube lists.\nPlease allow \"All files access\".",
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(onPressed: openAppSettings, child: const Text("Open Settings")),
+                TextButton(onPressed: _init, child: const Text("Try again")),
+              ],
             ),
           ),
-          
-          Expanded(
-            child: filteredPrompts.isEmpty
-                ? const Center(child: Text("No prompts found.\nTap + to create a text file!", textAlign: TextAlign.center))
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: filteredPrompts.length,
-                    itemBuilder: (context, index) {
-                      AiPrompt prompt = filteredPrompts[index];
-                      String indexNumber = (index + 1).toString().padLeft(2, '0');
+        ),
+      );
+    }
 
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 10),
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(15),
-                          onTap: () => _showReaderSheet(prompt),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  width: 35,
-                                  height: 35,
-                                  alignment: Alignment.center,
-                                  decoration: BoxDecoration(color: Colors.grey.shade800, shape: BoxShape.circle),
-                                  child: Text("#$indexNumber", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(child: Text(prompt.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                                          const SizedBox(width: 8),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                            decoration: BoxDecoration(color: _getCategoryColor(prompt.category).withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
-                                            child: Text(prompt.category, style: TextStyle(color: _getCategoryColor(prompt.category), fontSize: 10, fontWeight: FontWeight.bold)),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(prompt.content, style: const TextStyle(color: Colors.grey, fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
-                                    ],
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.copy, color: Colors.green),
-                                  tooltip: "Quick Copy",
-                                  onPressed: () => _copyToClipboard(prompt.content, prompt.title),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+    if (_basePath == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("TubeBox")),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.asset('assets/logo.png', width: 96, height: 96),
+                const SizedBox(height: 12),
+                const Icon(Icons.folder_open, size: 36, color: kAccent),
+                const SizedBox(height: 16),
+                const Text(
+                  "Choose the folder where Master_Playlist.m3u and your YouTube lists will be saved.",
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton.icon(
+                  onPressed: _pickFolder,
+                  icon: const Icon(Icons.folder),
+                  label: const Text("Choose Folder"),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showAddEditDialog,
-        backgroundColor: Colors.green,
-        child: const Icon(Icons.add, color: Colors.white),
-      ),
-    );
-  }
+        ),
+      );
+    }
 
-  Widget _buildFilterChip(String label) {
-    bool isSelected = _selectedFilter == label;
-    return Padding(
-      padding: const EdgeInsets.only(right: 8.0),
-      child: ChoiceChip(
-        label: Text(label, style: TextStyle(color: isSelected ? Colors.white : Colors.grey)),
-        selected: isSelected,
-        selectedColor: _getCategoryColor(label == 'All' ? 'General' : label),
-        backgroundColor: Colors.grey.shade800,
-        onSelected: (val) => setState(() => _selectedFilter = label),
-      ),
-    );
+    return HomeShell(key: ValueKey(_basePath), basePath: _basePath!, onChangeFolder: _pickFolder);
   }
 }
 
-class AiPrompt {
-  String title;
-  String content;
-  String category;
-  File file;
+// ============================================================================
+// HOME: two tabs - Kodi TV Manager and YouTube Lists
+// ============================================================================
+class HomeShell extends StatefulWidget {
+  final String basePath;
+  final VoidCallback onChangeFolder;
+  const HomeShell({Key? key, required this.basePath, required this.onChangeFolder}) : super(key: key);
 
-  AiPrompt({required this.title, required this.content, required this.category, required this.file});
+  @override
+  _HomeShellState createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  int _index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _index,
+        children: [
+          KodiTvScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
+          YouTubeListsScreen(basePath: widget.basePath),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.tv_outlined), selectedIcon: Icon(Icons.tv), label: 'Kodi TV'),
+          NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library), label: 'YouTube Lists'),
+        ],
+      ),
+    );
+  }
 }
 
 // ============================================================================
@@ -1045,8 +239,9 @@ class AiPrompt {
 // ============================================================================
 class KodiTvScreen extends StatefulWidget {
   final String basePath;
+  final VoidCallback? onChangeFolder;
 
-  const KodiTvScreen({Key? key, required this.basePath}) : super(key: key);
+  const KodiTvScreen({Key? key, required this.basePath, this.onChangeFolder}) : super(key: key);
 
   @override
   _KodiTvScreenState createState() => _KodiTvScreenState();
@@ -1098,7 +293,7 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
         });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text("🔗 Data detected and auto-pasted!"),
-          backgroundColor: Colors.blueAccent,
+          backgroundColor: kAccent,
         ));
       }
     }
@@ -1425,12 +620,88 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
     ));
   }
 
+  Widget _section({required IconData icon, required String title, required Widget child}) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      color: kSurface,
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 18, color: kAccent),
+                const SizedBox(width: 8),
+                Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, letterSpacing: 0.3)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _selectorRow({
+    required String value,
+    required List<String> items,
+    required ValueChanged<String> onChanged,
+    required VoidCallback onAdd,
+    required VoidCallback onRemove,
+    required String addTip,
+    required String removeTip,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: DropdownButtonFormField<String>(
+            value: value,
+            isExpanded: true,
+            borderRadius: BorderRadius.circular(14),
+            items: items.map((c) => DropdownMenuItem(value: c, child: Text(c, overflow: TextOverflow.ellipsis))).toList(),
+            onChanged: (val) {
+              if (val != null) onChanged(val);
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton.filledTonal(onPressed: onAdd, tooltip: addTip, icon: const Icon(Icons.add)),
+        const SizedBox(width: 4),
+        IconButton.filledTonal(
+          onPressed: onRemove,
+          tooltip: removeTip,
+          style: IconButton.styleFrom(foregroundColor: Colors.redAccent),
+          icon: const Icon(Icons.delete_outline),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Kodi TV Manager"),
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset('assets/logo.png', width: 30, height: 30),
+            ),
+            const SizedBox(width: 10),
+            const Text("Kodi TV Manager"),
+          ],
+        ),
         actions: [
+          if (widget.onChangeFolder != null)
+            IconButton(
+              icon: const Icon(Icons.folder_open),
+              tooltip: "Change Folder",
+              onPressed: widget.onChangeFolder,
+            ),
           IconButton(
             icon: const Icon(Icons.list_alt, color: Colors.orangeAccent),
             tooltip: "Manage Playlist",
@@ -1440,155 +711,127 @@ class _KodiTvScreenState extends State<KodiTvScreen> with WidgetsBindingObserver
               ));
               _autoCalculateChapter();
             },
-          )
+          ),
         ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text("Child Profile:", style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 5),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: _selectedChild,
-                    decoration: const InputDecoration(border: OutlineInputBorder()),
-                    items: _children.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                    onChanged: (val) {
-                      setState(() => _selectedChild = val!);
-                      _onProfileOrSubjectChanged();
-                    }
-                  ),
-                ),
-                const SizedBox(width: 10),
-                InkWell(
-                  onTap: _showAddChildDialog,
-                  child: Container(
-                    height: 60, width: 50,
-                    decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blueAccent)),
-                    child: const Icon(Icons.add, color: Colors.blueAccent),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                InkWell(
-                  onTap: _removeChildProfile,
-                  child: Container(
-                    height: 60, width: 50,
-                    decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.redAccent)),
-                    child: const Icon(Icons.delete, color: Colors.redAccent),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            const Text("Subject (Group Title):", style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 5),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: _selectedSubject,
-                    decoration: const InputDecoration(border: OutlineInputBorder()),
-                    items: _subjects.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-                    onChanged: (val) {
-                      setState(() => _selectedSubject = val!);
-                      _onProfileOrSubjectChanged();
-                    }
-                  ),
-                ),
-                const SizedBox(width: 10),
-                InkWell(
-                  onTap: _showAddSubjectDialog,
-                  child: Container(
-                    height: 60, width: 50,
-                    decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blueAccent)),
-                    child: const Icon(Icons.add, color: Colors.blueAccent),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                InkWell(
-                  onTap: _removeCurrentSubject,
-                  child: Container(
-                    height: 60, width: 50,
-                    decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.redAccent)),
-                    child: const Icon(Icons.delete, color: Colors.redAccent),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            Row(
-              children: [
-                Expanded(
-                  flex: 1,
-                  child: TextField(
-                    controller: _chapterCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: "Chapter No.", border: OutlineInputBorder()),
-                  ),
-                ),
-                const SizedBox(width: 15),
-                Expanded(
-                  flex: 2,
-                  child: TextField(
-                    controller: _customNameCtrl,
-                    decoration: const InputDecoration(labelText: "Custom Name", hintText: "e.g., Train Poetry", border: OutlineInputBorder()),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            const Text("YouTube Links:", style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 5),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _urlCtrl,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                      hintText: "Paste raw links OR full ChatGPT M3U text here...", 
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                ElevatedButton.icon(
-                  onPressed: _pasteUrl, 
-                  icon: const Icon(Icons.paste), 
-                  label: const Text("Paste"),
-                  style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 15))
-                ),
-              ],
-            ),
-            
-            const SizedBox(height: 30),
-
-            SizedBox(
-              height: 60,
-              child: ElevatedButton(
-                onPressed: _saveToKodi,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent, 
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
-                ),
-                child: const Text("Build & Save to TV", style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
+            _section(
+              icon: Icons.child_care,
+              title: "CHILD PROFILE",
+              child: _selectorRow(
+                value: _selectedChild,
+                items: _children,
+                onChanged: (v) {
+                  setState(() => _selectedChild = v);
+                  _onProfileOrSubjectChanged();
+                },
+                onAdd: _showAddChildDialog,
+                onRemove: _removeChildProfile,
+                addTip: "Add child",
+                removeTip: "Remove this child",
               ),
             ),
-            
-            const SizedBox(height: 20),
+            _section(
+              icon: Icons.menu_book,
+              title: "SUBJECT  (GROUP TITLE)",
+              child: _selectorRow(
+                value: _selectedSubject,
+                items: _subjects,
+                onChanged: (v) {
+                  setState(() => _selectedSubject = v);
+                  _onProfileOrSubjectChanged();
+                },
+                onAdd: _showAddSubjectDialog,
+                onRemove: _removeCurrentSubject,
+                addTip: "Add subject",
+                removeTip: "Remove this subject",
+              ),
+            ),
+            _section(
+              icon: Icons.edit_note,
+              title: "TITLE",
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 1,
+                    child: TextField(
+                      controller: _chapterCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: "Chapter No."),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: TextField(
+                      controller: _customNameCtrl,
+                      decoration: const InputDecoration(labelText: "Custom Name", hintText: "e.g., Train Poetry"),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _section(
+              icon: Icons.link,
+              title: "YOUTUBE LINKS",
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: _urlCtrl,
+                    minLines: 3,
+                    maxLines: 6,
+                    decoration: const InputDecoration(
+                      hintText: "Paste raw links OR full ChatGPT M3U text here...",
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _pasteUrl,
+                        icon: const Icon(Icons.paste, size: 18),
+                        label: const Text("Paste"),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: () => setState(() => _urlCtrl.clear()),
+                        icon: const Icon(Icons.clear, size: 18),
+                        label: const Text("Clear"),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Container(
+              height: 58,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                gradient: const LinearGradient(colors: [Color(0xFF7C3AED), Color(0xFFEC4899)]),
+              ),
+              child: ElevatedButton.icon(
+                onPressed: _saveToKodi,
+                icon: const Icon(Icons.cast, color: Colors.white),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  shadowColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                ),
+                label: const Text("Build & Save to TV", style: TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(height: 14),
             Text(
-              "Saving to: $m3uPath", 
-              style: const TextStyle(color: Colors.grey, fontSize: 12),
+              "Saving to: $m3uPath",
+              style: const TextStyle(color: Colors.grey, fontSize: 11),
               textAlign: TextAlign.center,
-            )
+            ),
           ],
         ),
       ),
@@ -1772,7 +1015,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
               Navigator.pop(context);
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Video updated successfully!"), backgroundColor: Colors.green));
             },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: kAccent),
             child: const Text("Save Changes", style: TextStyle(color: Colors.white)),
           ),
         ],
@@ -1795,7 +1038,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
               onTap: () { Navigator.pop(context); _playInYouTube(item.urlLine); },
             ),
             ListTile(
-              leading: const Icon(Icons.edit, color: Colors.blueAccent),
+              leading: const Icon(Icons.edit, color: kAccent),
               title: const Text('Edit Details / M3U Code'),
               onTap: () { Navigator.pop(context); _showEditDialog(item); },
             ),
@@ -1892,7 +1135,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                 Wrap(
                   spacing: 10,
                   children: [
-                    ChoiceChip(label: const Text("All"), selected: _selectedStatus == 'All', selectedColor: Colors.blueAccent, onSelected: (val) { setSheetState(() => _selectedStatus = 'All'); setState(() => _selectedItems.clear()); }),
+                    ChoiceChip(label: const Text("All"), selected: _selectedStatus == 'All', selectedColor: kAccent, onSelected: (val) { setSheetState(() => _selectedStatus = 'All'); setState(() => _selectedItems.clear()); }),
                     ChoiceChip(label: const Text("Working"), selected: _selectedStatus == 'working', selectedColor: Colors.green, onSelected: (val) { setSheetState(() => _selectedStatus = 'working'); setState(() => _selectedItems.clear()); }),
                     ChoiceChip(label: const Text("Unavailable"), selected: _selectedStatus == 'unavailable', selectedColor: Colors.orange, onSelected: (val) { setSheetState(() => _selectedStatus = 'unavailable'); setState(() => _selectedItems.clear()); }),
                     ChoiceChip(label: const Text("Kodi Error"), selected: _selectedStatus == 'kodi_error', selectedColor: Colors.orange, onSelected: (val) { setSheetState(() => _selectedStatus = 'kodi_error'); setState(() => _selectedItems.clear()); }),
@@ -1908,7 +1151,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                     ChoiceChip(
                       label: const Text("All"),
                       selected: _selectedFilter == 'All',
-                      selectedColor: Colors.blueAccent,
+                      selectedColor: kAccent,
                       onSelected: (val) {
                         setSheetState(() => _selectedFilter = 'All');
                         setState(() => _selectedItems.clear());
@@ -1917,7 +1160,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                     ...widget.childrenProfiles.map((String c) => ChoiceChip(
                       label: Text(c),
                       selected: _selectedFilter == c,
-                      selectedColor: Colors.blueAccent,
+                      selectedColor: kAccent,
                       onSelected: (val) {
                         setSheetState(() => _selectedFilter = c);
                         setState(() => _selectedItems.clear());
@@ -1935,7 +1178,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                   children: dynamicSubjects.map((String sub) => FilterChip(
                     label: Text(sub),
                     selected: _selectedSubjects.contains(sub),
-                    selectedColor: Colors.blueAccent.withOpacity(0.5),
+                    selectedColor: kAccent.withOpacity(0.5),
                     checkmarkColor: Colors.white,
                     onSelected: (bool selected) {
                       setSheetState(() {
@@ -1957,7 +1200,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                   child: ElevatedButton(
                     onPressed: () => Navigator.pop(context),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueAccent,
+                      backgroundColor: kAccent,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
                     ),
                     child: Text("Show $liveCount Videos", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
@@ -2046,13 +1289,13 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
           ),
           if (_selectedItems.length == 1)
             IconButton(icon: const Icon(Icons.play_circle_fill, color: Colors.redAccent), tooltip: "Play in YouTube", onPressed: () => _playInYouTube(_selectedItems.first.urlLine)),
-          IconButton(icon: const Icon(Icons.edit, color: Colors.blueAccent), tooltip: "Change Category", onPressed: _showBatchRenameDialog),
+          IconButton(icon: const Icon(Icons.edit, color: kAccent), tooltip: "Change Category", onPressed: _showBatchRenameDialog),
           IconButton(icon: const Icon(Icons.delete, color: Colors.red), tooltip: "Delete Selected", onPressed: _deleteSelectedItems),
         ] : [
           IconButton(
             icon: Icon(
               (_selectedFilter == 'All' && _selectedSubjects.isEmpty && _selectedStatus == 'All') ? Icons.filter_list : Icons.filter_list_alt, 
-              color: (_selectedFilter == 'All' && _selectedSubjects.isEmpty && _selectedStatus == 'All') ? Colors.white : Colors.blueAccent
+              color: (_selectedFilter == 'All' && _selectedSubjects.isEmpty && _selectedStatus == 'All') ? Colors.white : kAccent
             ),
             tooltip: "Filter",
             onPressed: _showGlobalFilters, 
@@ -2111,7 +1354,7 @@ class _PlaylistManagerScreenState extends State<PlaylistManagerScreen> {
                         children: [
                           Checkbox(
                             value: isSelected,
-                            activeColor: Colors.blueAccent,
+                            activeColor: kAccent,
                             onChanged: (bool? selected) {
                               setState(() { selected == true ? _selectedItems.add(item) : _selectedItems.remove(item); });
                             },
