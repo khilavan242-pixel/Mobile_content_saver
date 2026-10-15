@@ -1,185 +1,50 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'm3u_editor.dart';
+import 'm3u_store.dart';
+import 'tv_sync.dart';
 import 'youtube_core.dart';
 
-// ============================================================================
-// STORAGE: every .m3u file in the chosen folder (plus the old YouTube_Lists
-// sub-folder) is one "M3U file". Shares from the YouTube app are appended to
-// the currently selected one.
-// ============================================================================
-class M3uFile {
-  final String path;
-  final String name; // file name without ".m3u"
-  M3uFile(this.path, this.name);
+enum _Scope { current, all, custom }
 
-  @override
-  bool operator ==(Object other) => other is M3uFile && other.path == path;
-  @override
-  int get hashCode => path.hashCode;
+class _AddRequest {
+  final String text;
+  final M3uFile file;
+  final bool numbered;
+  final String group;
+  final String subject;
+  final int? startChapter;
+  final String customName;
+  _AddRequest({
+    required this.text,
+    required this.file,
+    required this.numbered,
+    required this.group,
+    required this.subject,
+    required this.startChapter,
+    required this.customName,
+  });
 }
 
-class YtStore {
-  final String basePath;
-  YtStore(this.basePath);
-
-  Directory get _legacyDir => Directory('$basePath/YouTube_Lists');
-
-  static String safeName(String n) => n.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').replaceAll(RegExp(r'\.m3u$', caseSensitive: false), '').trim();
-
-  static String _baseName(String path) {
-    final f = path.split('/').last;
-    return f.toLowerCase().endsWith('.m3u') ? f.substring(0, f.length - 4) : f;
-  }
-
-  Future<List<M3uFile>> listFiles() async {
-    final files = <M3uFile>[];
-    final seen = <String>{};
-    for (final d in [Directory(basePath), _legacyDir]) {
-      if (!await d.exists()) continue;
-      await for (final e in d.list(followLinks: false)) {
-        if (e is File && e.path.toLowerCase().endsWith('.m3u') && seen.add(e.path)) {
-          files.add(M3uFile(e.path, _baseName(e.path)));
-        }
-      }
-    }
-    files.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return files;
-  }
-
-  Future<M3uFile> create(String name) async {
-    final f = File('$basePath/${safeName(name)}.m3u');
-    if (!await f.parent.exists()) await f.parent.create(recursive: true);
-    if (!await f.exists()) await f.writeAsString('#EXTM3U\n');
-    return M3uFile(f.path, _baseName(f.path));
-  }
-
-  Future<void> delete(M3uFile f) async {
-    final file = File(f.path);
-    if (await file.exists()) await file.delete();
-  }
-
-  Future<M3uFile> rename(M3uFile f, String newName) async {
-    final dir = f.path.substring(0, f.path.lastIndexOf('/'));
-    final target = '$dir/${safeName(newName)}.m3u';
-    await File(f.path).rename(target);
-    return M3uFile(target, _baseName(target));
-  }
-
-  Future<List<YtItem>> load(M3uFile f) async {
-    final file = File(f.path);
-    if (!await file.exists()) return [];
-    final lines = await file.readAsLines();
-    final items = <YtItem>[];
-    for (int i = 0; i < lines.length; i++) {
-      if (!lines[i].startsWith('#EXTINF')) continue;
-
-      String prefix;
-      String title;
-      final m = RegExp(r'^(#EXTINF:.*?tvg-logo="[^"]*",\s*)(.*)$').firstMatch(lines[i]);
-      if (m != null) {
-        prefix = m.group(1)!;
-        title = m.group(2)!.trim();
-      } else {
-        final c = lines[i].lastIndexOf(',');
-        prefix = c >= 0 ? '${lines[i].substring(0, c + 1)} ' : '#EXTINF:-1, ';
-        title = c >= 0 ? lines[i].substring(c + 1).trim() : '';
-      }
-
-      String url = '';
-      for (int j = i + 1; j < lines.length && j <= i + 3; j++) {
-        final t = lines[j].trim();
-        if (t.isNotEmpty && !t.startsWith('#')) {
-          url = t;
-          break;
-        }
-      }
-      if (url.isEmpty) continue;
-
-      final p = RegExp(r'playlist_id=([A-Za-z0-9_-]+)').firstMatch(url);
-      final v = RegExp(r'video_id=([A-Za-z0-9_-]{11})').firstMatch(url);
-      if (p != null) {
-        items.add(YtItem(kind: 'playlist', id: p.group(1)!, title: title, infoPrefix: prefix));
-      } else if (v != null) {
-        items.add(YtItem(kind: 'video', id: v.group(1)!, title: title, infoPrefix: prefix));
-      } else {
-        final yt = parseYtText(url);
-        if (yt.isNotEmpty) {
-          yt.first.title = title;
-          yt.first.infoPrefix = prefix;
-          items.add(yt.first);
-        } else {
-          items.add(YtItem(kind: 'other', id: url, title: title, infoPrefix: prefix));
-        }
-      }
-    }
-    return items;
-  }
-
-  Future<void> save(M3uFile f, List<YtItem> items) async {
-    final group = f.name.replaceAll('"', '');
-    final sb = StringBuffer('#EXTM3U\n');
-    for (final it in items) {
-      final title = it.title.replaceAll(RegExp(r'[\r\n]+'), ' ').trim();
-      final String info;
-      if (it.infoPrefix != null) {
-        info = '${it.infoPrefix}$title';
-      } else {
-        final logo = it.isVideo ? it.thumbUrlHq : '';
-        info = '#EXTINF:-1 group-title="$group" tvg-logo="$logo", $title';
-      }
-      sb.write('\n$info\n${it.kodiUrl}\n');
-    }
-    final file = File(f.path);
-    if (!await file.parent.exists()) await file.parent.create(recursive: true);
-    await file.writeAsString(sb.toString());
-  }
-
-  /// Tells the native "share to this app" receiver which file to save into,
-  /// so a YouTube share is stored without ever opening this app.
-  Future<void> writeShareConfig(M3uFile f) async {
-    try {
-      final support = await getApplicationSupportDirectory();
-      await File('${support.path}/share_config.txt').writeAsString('${f.path}\n${f.name}');
-    } catch (e) {
-      debugPrint('Could not write share config: $e');
-    }
-  }
-
-  /// Shares received before a target file was chosen are parked natively in
-  /// pending_shares.txt (one "kind<TAB>id<TAB>title" per line).
-  Future<List<YtItem>> takePendingShares() async {
-    try {
-      final support = await getApplicationSupportDirectory();
-      final f = File('${support.path}/pending_shares.txt');
-      if (!await f.exists()) return [];
-      final lines = await f.readAsLines();
-      await f.delete();
-      final items = <YtItem>[];
-      for (final l in lines) {
-        final parts = l.split('\t');
-        if (parts.length >= 2 && parts[1].isNotEmpty) {
-          items.add(YtItem(kind: parts[0], id: parts[1], title: parts.length > 2 ? parts[2] : 'YouTube video'));
-        }
-      }
-      return items;
-    } catch (_) {
-      return [];
-    }
-  }
-}
+Color _statusColor(String s) => s == 'unavailable' ? Colors.redAccent : (s == 'kodi_error' ? Colors.orange : Colors.green);
 
 // ============================================================================
-// SCREEN: YouTube-style thumbnail view of the selected .m3u file
+// SCREEN: YouTube-style thumbnail view of one, several or all .m3u files
 // ============================================================================
 class M3uFilesScreen extends StatefulWidget {
   final String basePath;
-  const M3uFilesScreen({Key? key, required this.basePath}) : super(key: key);
+  final ValueNotifier<bool> navVisible;
+  final VoidCallback onGoToTvSync;
+  const M3uFilesScreen({
+    Key? key,
+    required this.basePath,
+    required this.navVisible,
+    required this.onGoToTvSync,
+  }) : super(key: key);
 
   @override
   _M3uFilesScreenState createState() => _M3uFilesScreenState();
@@ -187,19 +52,28 @@ class M3uFilesScreen extends StatefulWidget {
 
 class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObserver {
   late final YtStore _store;
-  final TextEditingController _addCtrl = TextEditingController();
+  final TextEditingController _searchCtrl = TextEditingController();
 
   List<M3uFile> _files = [];
-  M3uFile? _active;
-  List<YtItem> _items = [];
+  M3uFile? _active; // where new links / YouTube shares are saved
+  _Scope _scope = _Scope.current;
+  final Set<String> _customPaths = {};
+  final Map<String, List<YtItem>> _data = {};
   final Set<String> _selected = {};
+
+  String _query = '';
+  String _type = 'all'; // all | video | playlist
+  String _status = 'all'; // all | working | unavailable | kodi_error
+  String? _group;
+  String _sort = 'file'; // file | title | chapter
+
   bool _ready = false;
-  bool _grid = false;
-  String? _busy; // progress text while reading playlists
+  bool _grid = true;
+  String? _busy;
   bool _working = false;
   final Set<String> _failedPlaylists = {};
 
-  static const String _defaultFile = 'My Videos';
+  static const String _defaultFile = 'Master_Playlist';
 
   @override
   void initState() {
@@ -212,7 +86,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _addCtrl.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -222,23 +96,43 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     if (state == AppLifecycleState.resumed && _ready) _refresh();
   }
 
+  void _snack(String msg, {bool success = false, SnackBarAction? action}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: success ? Colors.green : Colors.redAccent,
+      action: action,
+    ));
+  }
+
+  // ------------------------------------------------------------------ loading
+  List<M3uFile> get _scopeFiles {
+    switch (_scope) {
+      case _Scope.all:
+        return _files;
+      case _Scope.custom:
+        final l = _files.where((f) => _customPaths.contains(f.path)).toList();
+        return l.isEmpty && _active != null ? [_active!] : l;
+      case _Scope.current:
+        return _active == null ? <M3uFile>[] : [_active!];
+    }
+  }
+
   Future<void> _init() async {
     try {
-      var files = await _store.listFiles();
       final prefs = await SharedPreferences.getInstance();
-      _grid = prefs.getBool('m3u_grid') ?? false;
-      if (files.isEmpty) {
-        files = [await _store.create(_defaultFile)];
-      }
-      final savedPath = prefs.getString('m3u_active_file');
+      _grid = prefs.getBool('m3u_grid') ?? true;
+      var files = await _store.listFiles();
+      if (files.isEmpty) files = [await _store.create(_defaultFile)];
       _files = files;
-      _active = files.firstWhere((f) => f.path == savedPath, orElse: () {
-        // First run: prefer the file shares were already going into, else the first one.
-        return files.first;
-      });
+      final savedPath = prefs.getString('m3u_active_file');
+      _active = files.firstWhere(
+        (f) => f.path == savedPath,
+        orElse: () => files.firstWhere((f) => f.name == _defaultFile, orElse: () => files.first),
+      );
       await prefs.setString('m3u_active_file', _active!.path);
       await _importPending();
-      _items = await _store.load(_active!);
+      await _loadScope();
       await _store.writeShareConfig(_active!);
     } catch (e) {
       _snack('Could not open files: $e');
@@ -249,29 +143,41 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   }
 
   Future<void> _importPending() async {
-    if (_active == null) return;
+    final file = _active;
+    if (file == null) return;
     final pending = await _store.takePendingShares();
     if (pending.isEmpty) return;
-    final current = await _store.load(_active!);
-    final known = current.map((e) => e.key).toSet();
-    for (final p in pending) {
-      if (known.add(p.key)) current.add(p);
+    await _store.update(file, (items) {
+      final known = items.map((e) => e.key).toSet();
+      for (final p in pending) {
+        if (known.add(p.key)) items.add(p);
+      }
+    });
+  }
+
+  Future<void> _loadScope() async {
+    final fresh = <String, List<YtItem>>{};
+    for (final f in _scopeFiles) {
+      fresh[f.path] = await _store.load(f);
     }
-    await _store.save(_active!, current);
+    _data
+      ..clear()
+      ..addAll(fresh);
+    final ids = _data.entries.expand((e) => e.value.map((i) => '${e.key}|${i.key}')).toSet();
+    _selected.removeWhere((k) => !ids.contains(k));
+    if (_group != null && !_groups().contains(_group)) _group = null;
   }
 
   Future<void> _refresh() async {
     if (_active == null) return;
     try {
       final files = await _store.listFiles();
+      if (files.isNotEmpty) _files = files;
+      if (!_files.contains(_active)) _active = _files.first;
       await _importPending();
-      final items = await _store.load(_active!);
+      await _loadScope();
       if (!mounted) return;
-      setState(() {
-        _files = files;
-        _items = items;
-        _selected.removeWhere((k) => !items.any((e) => e.key == k));
-      });
+      setState(() {});
       _postProcess();
     } catch (_) {}
   }
@@ -279,42 +185,57 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   Future<void> _switchTo(M3uFile f) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('m3u_active_file', f.path);
-    final items = await _store.load(f);
+    _active = f;
+    _scope = _Scope.current;
+    _selected.clear();
+    _group = null;
+    await _loadScope();
     await _store.writeShareConfig(f);
     if (!mounted) return;
-    setState(() {
-      _active = f;
-      _items = items;
-      _selected.clear();
-    });
+    setState(() {});
     _postProcess();
   }
 
-  void _snack(String msg, {bool success = false}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      backgroundColor: success ? Colors.green : Colors.redAccent,
-    ));
+  Future<void> _setScope(_Scope s, {Set<String>? custom}) async {
+    _scope = s;
+    if (custom != null) {
+      final copy = Set<String>.from(custom); // `custom` may be _customPaths itself
+      _customPaths
+        ..clear()
+        ..addAll(copy);
+    }
+    _selected.clear();
+    await _loadScope();
+    if (mounted) setState(() {});
+    _postProcess();
+  }
+
+  /// Change one file on disk, then refresh the view.
+  Future<void> _mutate(M3uFile f, void Function(List<YtItem> items) change) async {
+    await _store.update(f, change);
+    await _loadScope();
+    if (mounted) setState(() {});
   }
 
   // ------------------------------------------------- background processing
-  /// Expands playlist entries into their videos, then fills in missing titles.
   Future<void> _postProcess() async {
     if (_working || _active == null) return;
     _working = true;
     try {
-      await _expandPlaylists();
-      await _fetchMissingTitles();
+      for (final f in List<M3uFile>.from(_scopeFiles)) {
+        await _expandPlaylists(f);
+        await _fillTitles(f);
+      }
     } finally {
       _working = false;
+      if (mounted) setState(() => _busy = null);
     }
   }
 
-  Future<void> _expandPlaylists({String? onlyId}) async {
-    final file = _active;
-    if (file == null) return;
-    final targets = _items.where((e) => e.isPlaylist && (onlyId == null ? !_failedPlaylists.contains(e.id) : e.id == onlyId)).toList();
+  /// Turns playlist entries into their videos (in place).
+  Future<void> _expandPlaylists(M3uFile file, {String? onlyId}) async {
+    final items = _data[file.path] ?? [];
+    final targets = items.where((e) => e.isPlaylist && (onlyId == null ? !_failedPlaylists.contains(e.id) : e.id == onlyId)).toList();
     if (targets.isEmpty) return;
 
     final results = <String, PlaylistResult>{};
@@ -335,113 +256,222 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     if (mounted) setState(() => _busy = null);
 
     if (results.isNotEmpty) {
-      // Re-read the file: a share may have been appended while we were fetching.
-      final fresh = await _store.load(file);
-      final known = fresh.where((e) => !e.isPlaylist || !results.containsKey(e.id)).map((e) => e.key).toSet();
-      final out = <YtItem>[];
       int added = 0;
-      for (final it in fresh) {
-        final r = it.isPlaylist ? results[it.id] : null;
-        if (r == null) {
-          out.add(it);
-        } else {
+      await _mutate(file, (fresh) {
+        final known = fresh.where((e) => !e.isPlaylist || !results.containsKey(e.id)).map((e) => e.key).toSet();
+        final out = <YtItem>[];
+        for (final it in fresh) {
+          final r = it.isPlaylist ? results[it.id] : null;
+          if (r == null) {
+            out.add(it);
+            continue;
+          }
           for (final v in r.videos) {
             if (known.add(v.key)) {
+              v.group = it.group; // keep the playlist's category
               out.add(v);
               added++;
             }
           }
         }
-      }
-      await _store.save(file, out);
-      if (mounted && _active == file) setState(() => _items = out);
+        fresh
+          ..clear()
+          ..addAll(out);
+        renumberGroups(fresh, out.map((e) => e.group));
+      });
       _snack('Playlist expanded: $added video(s) added', success: true);
     }
     if (lastError != null) _snack(lastError);
   }
 
-  Future<void> _fetchMissingTitles() async {
-    final file = _active;
-    if (file == null) return;
-    final missing = _items.where((e) => !e.isOther && !e.hasRealTitle && !e.isPlaylist).toList();
+  /// Fills in missing titles and flags ids that do not exist at all.
+  Future<void> _fillTitles(M3uFile file) async {
+    final items = _data[file.path] ?? [];
+    final missing = items.where((e) => e.isVideo && !e.hasRealTitle).toList();
     if (missing.isEmpty) return;
-    final found = <String, String>{};
+    final titles = <String, String>{};
+    final dead = <String>{};
     for (final it in missing) {
-      final t = await fetchYtTitle(it);
-      if (t != null) {
-        found[it.key] = t;
-        if (mounted && _active == file) setState(() => it.title = t);
-      }
+      final info = await fetchYtInfo(it);
+      if (info.title != null) titles[it.key] = info.title!;
+      if (info.notFound) dead.add(it.key);
     }
-    if (found.isNotEmpty) {
-      final fresh = await _store.load(file);
+    if (titles.isEmpty && dead.isEmpty) return;
+    await _mutate(file, (fresh) {
       for (final it in fresh) {
-        final t = found[it.key];
-        if (t != null) it.title = t;
+        final t = titles[it.key];
+        if (t != null && !it.hasRealTitle) {
+          it.title = it.chapter != null ? 'CH${it.chapter}: $t' : t;
+        }
+        if (dead.contains(it.key) && it.status == 'working') it.status = 'unavailable';
       }
-      await _store.save(file, fresh);
+    });
+    if (dead.isNotEmpty) {
+      _snack('${dead.length} video(s) do not exist on YouTube and were marked unavailable.');
     }
   }
 
-  // ---------------------------------------------------------------- add
-  Future<void> _addFromText() async {
-    final file = _active;
-    if (file == null) return;
-    final parsed = parseYtText(_addCtrl.text);
-    if (parsed.isEmpty) {
-      _snack('No YouTube video or playlist links found in the text.');
+  /// Accurate check of every video in [entries] (deleted / private / invalid id).
+  Future<void> _checkAvailability(List<Entry> entries) async {
+    final videos = entries.where((e) => e.item.isVideo).toList();
+    if (videos.isEmpty) {
+      _snack('No videos to check.');
       return;
     }
-
-    final toAdd = <YtItem>[];
-    final notes = <String>[];
-    for (final p in parsed) {
-      if (!p.isPlaylist) {
-        toAdd.add(p);
-        continue;
+    final results = <String, bool?>{};
+    int done = 0;
+    for (int i = 0; i < videos.length; i += 3) {
+      final batch = videos.sublist(i, i + 3 > videos.length ? videos.length : i + 3);
+      final r = await Future.wait(batch.map((e) => checkVideoPlayable(e.item.id)));
+      for (int k = 0; k < batch.length; k++) {
+        results[batch[k].id] = r[k];
       }
-      setState(() => _busy = 'Reading playlist…');
-      final res = await fetchPlaylist(p.id, onProgress: (n) {
-        if (mounted) setState(() => _busy = 'Reading playlist… $n videos');
-      });
-      if (res.videos.isEmpty) {
-        _failedPlaylists.add(p.id);
-        notes.add(res.error ?? 'Playlist could not be read.');
-        toAdd.add(p); // keep as a playlist entry so it can still be opened
-      } else {
-        if (res.error != null) notes.add(res.error!);
-        toAdd.addAll(res.videos);
-      }
+      done += batch.length;
+      if (mounted) setState(() => _busy = 'Checking videos… $done/${videos.length}');
     }
     if (mounted) setState(() => _busy = null);
 
-    final current = await _store.load(file);
-    final known = current.map((e) => e.key).toSet();
-    int added = 0;
-    for (final p in toAdd) {
-      if (known.add(p.key)) {
-        current.add(p);
-        added++;
+    int bad = 0;
+    int unknown = 0;
+    final byFile = <String, List<Entry>>{};
+    for (final e in videos) {
+      byFile.putIfAbsent(e.file.path, () => []).add(e);
+    }
+    for (final group in byFile.values) {
+      final file = group.first.file;
+      await _mutate(file, (fresh) {
+        for (final it in fresh) {
+          final r = results['${file.path}|${it.key}'];
+          if (!results.containsKey('${file.path}|${it.key}')) continue;
+          if (r == false) {
+            it.status = 'unavailable';
+          } else if (r == true && it.status == 'unavailable') {
+            it.status = 'working';
+          }
+        }
+      });
+      for (final e in group) {
+        final r = results[e.id];
+        if (r == false) bad++;
+        if (r == null) unknown++;
       }
     }
-    await _store.save(file, current);
-    _addCtrl.clear();
-    if (!mounted) return;
-    setState(() => _items = current);
     _snack(
-      'Added $added to "${file.name}.m3u" (${toAdd.length - added} already there)${notes.isEmpty ? '' : '\n${notes.first}'}',
-      success: notes.isEmpty,
+      bad == 0 ? 'All checked videos can play${unknown > 0 ? ' ($unknown could not be checked)' : ''}.' : '$bad video(s) cannot play on YouTube (deleted, private or wrong link).',
+      success: bad == 0,
+      action: bad == 0
+          ? null
+          : SnackBarAction(
+              label: 'SHOW',
+              textColor: Colors.white,
+              onPressed: () => setState(() => _status = 'unavailable'),
+            ),
+    );
+  }
+
+  // ------------------------------------------------------------- adding
+  Future<void> _showAddSheet() async {
+    final file = _active;
+    if (file == null) return;
+    final req = await showModalBottomSheet<_AddRequest>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _AddSheet(store: _store, files: _files, active: file),
+    );
+    if (req == null) return;
+    await _addLinks(req);
+  }
+
+  Future<void> _addLinks(_AddRequest req) async {
+    final text = req.text.trim();
+    if (text.isEmpty) return;
+
+    List<YtItem> toAdd = [];
+    final notes = <String>[];
+
+    if (text.contains('#EXTINF')) {
+      toAdd = parseM3uLines(text.split('\n'));
+      if (toAdd.isEmpty) {
+        _snack('No playable entries found in the pasted M3U text.');
+        return;
+      }
+    } else {
+      final parsed = parseYtText(text);
+      if (parsed.isEmpty) {
+        _snack('No YouTube video or playlist links found in the text.');
+        return;
+      }
+      for (final p in parsed) {
+        if (!p.isPlaylist) {
+          toAdd.add(p);
+          continue;
+        }
+        if (mounted) setState(() => _busy = 'Reading playlist…');
+        final res = await fetchPlaylist(p.id, onProgress: (n) {
+          if (mounted) setState(() => _busy = 'Reading playlist… $n videos');
+        });
+        if (res.videos.isEmpty) {
+          _failedPlaylists.add(p.id);
+          notes.add(res.error ?? 'Playlist could not be read.');
+          toAdd.add(p); // keep as a playlist entry so it can still be opened
+        } else {
+          if (res.error != null) notes.add(res.error!);
+          toAdd.addAll(res.videos);
+        }
+      }
+      if (mounted) setState(() => _busy = null);
+    }
+
+    int added = 0;
+    int firstChapter = 0;
+    await _mutate(req.file, (items) {
+      final known = items.map((e) => e.key).toSet();
+      int chapter = req.startChapter ?? (req.numbered ? nextChapter(items, req.group) : 0);
+      firstChapter = chapter;
+      final fresh = toAdd.where((e) => known.add(e.key)).toList();
+      for (int i = 0; i < fresh.length; i++) {
+        final it = fresh[i];
+        if (req.numbered) {
+          it.group = req.group;
+          String base;
+          if (req.customName.isNotEmpty) {
+            base = fresh.length > 1 ? '${req.customName} (Part ${i + 1})' : req.customName;
+          } else if (it.hasRealTitle) {
+            base = it.plainTitle;
+          } else {
+            base = it.isPlaylist ? '${req.subject} Playlist' : '${req.subject} Lesson';
+          }
+          it.title = base;
+          it.setChapter(chapter++);
+        } else if (req.customName.isNotEmpty) {
+          it.title = fresh.length > 1 ? '${req.customName} (Part ${i + 1})' : req.customName;
+        }
+        items.add(it);
+        added++;
+      }
+    });
+
+    // Make sure the user sees what they just added.
+    if (_active != req.file) {
+      await _switchTo(req.file);
+    } else if (_scope == _Scope.custom && !_customPaths.contains(req.file.path)) {
+      _customPaths.add(req.file.path);
+      await _loadScope();
+    }
+    if (!mounted) return;
+    setState(() {});
+    _snack(
+      added == 0
+          ? 'Everything was already in "${req.file.name}.m3u".'
+          : 'Added $added to "${req.file.name}.m3u"${req.numbered ? ' from CH$firstChapter' : ''} (${toAdd.length - added} already there)${notes.isEmpty ? '' : '\n${notes.first}'}',
+      success: notes.isEmpty && added > 0,
     );
     _postProcess();
   }
 
-  Future<void> _pasteFromClipboard() async {
-    final data = await Clipboard.getData('text/plain');
-    if (data?.text != null) setState(() => _addCtrl.text = data!.text!);
-  }
-
   // ------------------------------------------------------------- file ops
-  Future<String?> _askName(String title, {String initial = '', String hint = 'Name'}) async {
+  Future<String?> _askName(String title, {String initial = '', String hint = 'Name', TextInputType? type}) async {
     final ctrl = TextEditingController(text: initial);
     return showDialog<String>(
       context: context,
@@ -450,12 +480,13 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         content: TextField(
           controller: ctrl,
           autofocus: true,
+          keyboardType: type,
           textCapitalization: TextCapitalization.words,
           decoration: InputDecoration(hintText: hint),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('OK')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('OK')),
         ],
       ),
     );
@@ -471,8 +502,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       return;
     }
     final f = await _store.create(safe);
-    final files = await _store.listFiles();
-    setState(() => _files = files);
+    _files = await _store.listFiles();
     await _switchTo(f);
     _snack('Created "$safe.m3u". New shared links will be saved here.', success: true);
   }
@@ -489,8 +519,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       return;
     }
     final renamed = await _store.rename(cur, safe);
-    final files = await _store.listFiles();
-    setState(() => _files = files);
+    _files = await _store.listFiles();
     await _switchTo(renamed);
   }
 
@@ -504,9 +533,9 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         content: const Text('The file and all links in it will be removed.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(
+          FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
             child: const Text('Delete'),
           ),
         ],
@@ -516,7 +545,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     await _store.delete(cur);
     var files = await _store.listFiles();
     if (files.isEmpty) files = [await _store.create(_defaultFile)];
-    setState(() => _files = files);
+    _files = files;
     await _switchTo(files.first);
   }
 
@@ -527,11 +556,17 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     await _refresh();
   }
 
-  Future<void> _copyLinks(Iterable<YtItem> items) async {
-    final list = items.toList();
-    if (list.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: list.map((e) => e.webUrl).join('\n')));
-    _snack('Copied ${list.length} link(s)', success: true);
+  Future<void> _sendToTv() async {
+    final cur = _active;
+    if (cur == null) return;
+    _snack('Sending "${cur.name}.m3u" to your TV…', success: true);
+    final r = await quickSendToTv(cur.path, cur.name);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    if (r.needSetup) {
+      widget.onGoToTvSync();
+    }
+    _snack(r.message, success: r.ok);
   }
 
   Future<void> _toggleGrid() async {
@@ -543,54 +578,78 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   }
 
   // ------------------------------------------------------------ item ops
+  Future<void> _copyLinks(Iterable<YtItem> items) async {
+    final list = items.toList();
+    if (list.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: list.map((e) => e.webUrl).join('\n')));
+    _snack('Copied ${list.length} link(s)', success: true);
+  }
+
   Future<void> _open(YtItem item) async {
     if (item.isOther) {
       _snack('This entry is not a YouTube link.');
       return;
     }
-    final app = Uri.parse('vnd.youtube://${item.id}');
-    final web = Uri.parse(item.webUrl);
+    if (item.isVideo) {
+      try {
+        // Straight into the YouTube app; falls through to the web page if it is missing.
+        if (await launchUrl(Uri.parse('vnd.youtube://${item.id}'), mode: LaunchMode.externalApplication)) return;
+      } catch (_) {}
+    }
     try {
-      if (item.isVideo && await canLaunchUrl(app)) {
-        await launchUrl(app, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(web, mode: LaunchMode.externalApplication);
-      }
-    } catch (e) {
+      final ok = await launchUrl(Uri.parse(item.webUrl), mode: LaunchMode.externalApplication);
+      if (!ok) _snack('Could not open YouTube.');
+    } catch (_) {
       _snack('Could not open YouTube.');
     }
   }
 
-  Future<void> _removeItems(Set<String> keys) async {
-    final file = _active;
-    if (file == null || keys.isEmpty) return;
-    final fresh = await _store.load(file);
-    fresh.removeWhere((e) => keys.contains(e.key));
-    await _store.save(file, fresh);
-    if (!mounted) return;
-    setState(() {
-      _items = fresh;
-      _selected.removeAll(keys);
-    });
-  }
-
-  Future<void> _editTitle(YtItem item) async {
-    final file = _active;
-    if (file == null) return;
-    final t = await _askName('Edit title', initial: item.title, hint: 'Title');
-    if (t == null || t.isEmpty) return;
-    final fresh = await _store.load(file);
-    for (final e in fresh) {
-      if (e.key == item.key) e.title = t;
+  List<Entry> _chosen() {
+    final out = <Entry>[];
+    for (final f in _scopeFiles) {
+      for (final it in _data[f.path] ?? const <YtItem>[]) {
+        if (_selected.contains('${f.path}|${it.key}')) out.add(Entry(f, it));
+      }
     }
-    await _store.save(file, fresh);
-    if (mounted) setState(() => _items = fresh);
+    return out;
   }
 
-  Future<void> _moveItems(List<YtItem> items) async {
-    final cur = _active;
-    if (cur == null || items.isEmpty) return;
-    final others = _files.where((f) => f != cur).toList();
+  Map<M3uFile, List<Entry>> _byFile(List<Entry> entries) {
+    final m = <M3uFile, List<Entry>>{};
+    for (final e in entries) {
+      m.putIfAbsent(e.file, () => []).add(e);
+    }
+    return m;
+  }
+
+  Future<void> _deleteEntries(List<Entry> entries) async {
+    for (final g in _byFile(entries).entries) {
+      final keys = g.value.map((e) => e.item.key).toSet();
+      await _mutate(g.key, (items) {
+        final groups = items.where((e) => keys.contains(e.key)).map((e) => e.group).toSet();
+        items.removeWhere((e) => keys.contains(e.key));
+        renumberGroups(items, groups);
+      });
+    }
+    if (mounted) setState(_selected.clear);
+  }
+
+  Future<void> _setStatus(List<Entry> entries, String status) async {
+    for (final g in _byFile(entries).entries) {
+      final keys = g.value.map((e) => e.item.key).toSet();
+      await _mutate(g.key, (items) {
+        for (final it in items) {
+          if (keys.contains(it.key)) it.status = status;
+        }
+      });
+    }
+    _snack('Marked ${entries.length} as ${status.replaceAll('_', ' ')}', success: true);
+  }
+
+  Future<void> _moveEntries(List<Entry> entries) async {
+    if (entries.isEmpty) return;
+    final sources = _byFile(entries).keys.toSet();
+    final others = _files.where((f) => !(sources.length == 1 && sources.contains(f))).toList();
     if (others.isEmpty) {
       _snack('Create another .m3u file first (the "+ New file" chip).');
       return;
@@ -603,27 +662,353 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       ),
     );
     if (target == null) return;
-    final dest = await _store.load(target);
-    final known = dest.map((e) => e.key).toSet();
-    for (final it in items) {
-      if (known.add(it.key)) {
-        dest.add(YtItem(kind: it.kind, id: it.id, title: it.title));
+    final moving = entries.where((e) => e.file != target).toList();
+    await _mutate(target, (items) {
+      final known = items.map((e) => e.key).toSet();
+      final groups = <String>{};
+      for (final e in moving) {
+        if (known.add(e.item.key)) {
+          items.add(e.item);
+          groups.add(e.item.group);
+        }
+      }
+      renumberGroups(items, groups);
+    });
+    for (final g in _byFile(moving).entries) {
+      final keys = g.value.map((e) => e.item.key).toSet();
+      await _mutate(g.key, (items) {
+        final groups = items.where((e) => keys.contains(e.key)).map((e) => e.group).toSet();
+        items.removeWhere((e) => keys.contains(e.key));
+        renumberGroups(items, groups);
+      });
+    }
+    if (mounted) setState(_selected.clear);
+    _snack('Moved ${moving.length} to "${target.name}.m3u"', success: true);
+  }
+
+  Future<void> _setGroup(List<Entry> entries) async {
+    if (entries.isEmpty) return;
+    final groups = _allGroups();
+    final ctrl = TextEditingController(text: entries.first.item.group);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Move to category'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'e.g. Lakshya - Maths')),
+              if (groups.isNotEmpty) const SizedBox(height: 12),
+              if (groups.isNotEmpty) const Text('Existing categories', style: TextStyle(color: Colors.grey, fontSize: 12)),
+              Wrap(
+                spacing: 8,
+                children: groups.map((g) => ActionChip(label: Text(g), onPressed: () => ctrl.text = g)).toList(),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Move')),
+        ],
+      ),
+    );
+    if (value == null) return;
+    for (final g in _byFile(entries).entries) {
+      final keys = g.value.map((e) => e.item.key).toSet();
+      await _mutate(g.key, (items) {
+        final affected = <String>{value};
+        for (final it in items) {
+          if (keys.contains(it.key)) {
+            affected.add(it.group);
+            it.group = value;
+          }
+        }
+        renumberGroups(items, affected);
+      });
+    }
+    if (mounted) setState(_selected.clear);
+    _snack('Moved ${entries.length} to "${value.isEmpty ? 'no category' : value}"', success: true);
+  }
+
+  Future<void> _editEntry(Entry e) async {
+    final titleCtrl = TextEditingController(text: e.item.title);
+    final groupCtrl = TextEditingController(text: e.item.group);
+    final linkCtrl = TextEditingController(text: e.item.webUrl);
+    String status = e.item.status;
+    final groups = _allGroups();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: const Text('Edit video'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Title')),
+                const SizedBox(height: 10),
+                TextField(controller: groupCtrl, decoration: const InputDecoration(labelText: 'Category (group)')),
+                if (groups.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Wrap(
+                      spacing: 6,
+                      children: groups.map((g) => ActionChip(label: Text(g), onPressed: () => groupCtrl.text = g)).toList(),
+                    ),
+                  ),
+                const SizedBox(height: 10),
+                TextField(controller: linkCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'YouTube link')),
+                const SizedBox(height: 12),
+                const Text('Status', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    for (final s in const ['working', 'unavailable', 'kodi_error'])
+                      ChoiceChip(
+                        label: Text(s.replaceAll('_', ' ')),
+                        selected: status == s,
+                        onSelected: (_) => setD(() => status = s),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+
+    final oldKey = e.item.key;
+    final newTitle = titleCtrl.text.trim();
+    final newGroup = groupCtrl.text.trim();
+    final parsed = parseYtText(linkCtrl.text);
+    await _mutate(e.file, (items) {
+      final idx = items.indexWhere((x) => x.key == oldKey);
+      if (idx < 0) return;
+      var it = items[idx];
+      final oldGroup = it.group;
+      if (parsed.isNotEmpty && parsed.first.key != oldKey) {
+        final np = parsed.first;
+        np.attrs.addAll(it.attrs);
+        np.duration = it.duration;
+        np.title = it.title;
+        it = np;
+        items[idx] = it;
+      }
+      if (newTitle.isNotEmpty) it.title = newTitle;
+      it.group = newGroup;
+      it.status = status;
+      renumberGroups(items, {oldGroup, newGroup});
+    });
+  }
+
+  // ------------------------------------------------------------- derived
+  List<String> _groups() {
+    final s = <String>{};
+    for (final f in _scopeFiles) {
+      for (final it in _data[f.path] ?? const <YtItem>[]) {
+        if (it.group.isNotEmpty) s.add(it.group);
       }
     }
-    await _store.save(target, dest);
-    await _removeItems(items.map((e) => e.key).toSet());
-    _snack('Moved ${items.length} to "${target.name}.m3u"', success: true);
+    final l = s.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return l;
+  }
+
+  List<String> _allGroups() => _groups();
+
+  List<Entry> _visible() {
+    final q = _query.trim().toLowerCase();
+    final out = <Entry>[];
+    for (final f in _scopeFiles) {
+      for (final it in _data[f.path] ?? const <YtItem>[]) {
+        if (_type == 'video' && !it.isVideo) continue;
+        if (_type == 'playlist' && !it.isPlaylist) continue;
+        if (_status != 'all' && it.status != _status) continue;
+        if (_group != null && it.group != _group) continue;
+        if (q.isNotEmpty && !('${it.title} ${it.group} ${it.id}'.toLowerCase().contains(q))) continue;
+        out.add(Entry(f, it));
+      }
+    }
+    if (_sort == 'title') {
+      out.sort((a, b) => a.item.plainTitle.toLowerCase().compareTo(b.item.plainTitle.toLowerCase()));
+    } else if (_sort == 'chapter') {
+      out.sort((a, b) {
+        final g = a.item.group.compareTo(b.item.group);
+        if (g != 0) return g;
+        return (a.item.chapter ?? 1 << 30).compareTo(b.item.chapter ?? 1 << 30);
+      });
+    }
+    return out;
+  }
+
+  int get _unavailableCount {
+    int n = 0;
+    for (final f in _scopeFiles) {
+      for (final it in _data[f.path] ?? const <YtItem>[]) {
+        if (it.status == 'unavailable') n++;
+      }
+    }
+    return n;
+  }
+
+  bool get _filtersActive => _type != 'all' || _status != 'all' || _group != null || _scope == _Scope.custom || _sort != 'file';
+
+  void _resetFilters() {
+    setState(() {
+      _type = 'all';
+      _status = 'all';
+      _group = null;
+      _sort = 'file';
+    });
+  }
+
+  // ------------------------------------------------------- filter sheet
+  Future<void> _showFilterSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) {
+          void both(VoidCallback f) {
+            setState(f);
+            setS(() {});
+          }
+
+          Widget label(String t) => Padding(
+                padding: const EdgeInsets.only(top: 14, bottom: 6),
+                child: Text(t, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600)),
+              );
+
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Search & filters', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      TextButton(
+                        onPressed: () {
+                          both(() {
+                            _type = 'all';
+                            _status = 'all';
+                            _group = null;
+                            _sort = 'file';
+                          });
+                          _setScope(_Scope.current);
+                        },
+                        child: const Text('Reset', style: TextStyle(color: Colors.redAccent)),
+                      ),
+                    ],
+                  ),
+                  label('SEARCH IN'),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('This file'),
+                        selected: _scope == _Scope.current,
+                        onSelected: (_) async {
+                          await _setScope(_Scope.current);
+                          setS(() {});
+                        },
+                      ),
+                      ChoiceChip(
+                        label: const Text('All files'),
+                        selected: _scope == _Scope.all,
+                        onSelected: (_) async {
+                          await _setScope(_Scope.all);
+                          setS(() {});
+                        },
+                      ),
+                      ChoiceChip(
+                        label: const Text('Choose files'),
+                        selected: _scope == _Scope.custom,
+                        onSelected: (_) async {
+                          await _setScope(_Scope.custom, custom: _customPaths.isEmpty && _active != null ? {_active!.path} : _customPaths);
+                          setS(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  if (_scope == _Scope.custom)
+                    Wrap(
+                      spacing: 8,
+                      children: _files
+                          .map((f) => FilterChip(
+                                label: Text('${f.name}.m3u'),
+                                selected: _customPaths.contains(f.path),
+                                onSelected: (v) async {
+                                  final next = Set<String>.from(_customPaths);
+                                  v ? next.add(f.path) : next.remove(f.path);
+                                  if (next.isEmpty) return;
+                                  await _setScope(_Scope.custom, custom: next);
+                                  setS(() {});
+                                },
+                              ))
+                          .toList(),
+                    ),
+                  label('TYPE'),
+                  Wrap(spacing: 8, children: [
+                    for (final t in const [('all', 'All'), ('video', 'Videos'), ('playlist', 'Playlists')])
+                      ChoiceChip(label: Text(t.$2), selected: _type == t.$1, onSelected: (_) => both(() => _type = t.$1)),
+                  ]),
+                  label('LINK STATUS'),
+                  Wrap(spacing: 8, children: [
+                    for (final t in const [('all', 'All'), ('working', 'Working'), ('unavailable', 'Unavailable'), ('kodi_error', 'Kodi error')])
+                      ChoiceChip(label: Text(t.$2), selected: _status == t.$1, onSelected: (_) => both(() => _status = t.$1)),
+                  ]),
+                  if (_groups().isNotEmpty) label('CATEGORY'),
+                  if (_groups().isNotEmpty)
+                    Wrap(spacing: 8, runSpacing: 4, children: [
+                      ChoiceChip(label: const Text('All'), selected: _group == null, onSelected: (_) => both(() => _group = null)),
+                      for (final g in _groups())
+                        ChoiceChip(label: Text(g), selected: _group == g, onSelected: (_) => both(() => _group = g)),
+                    ]),
+                  label('SORT BY'),
+                  Wrap(spacing: 8, children: [
+                    for (final t in const [('file', 'File order'), ('title', 'Title A–Z'), ('chapter', 'Category & chapter')])
+                      ChoiceChip(label: Text(t.$2), selected: _sort == t.$1, onSelected: (_) => both(() => _sort = t.$1)),
+                  ]),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: FilledButton(onPressed: () => Navigator.pop(ctx), child: Text('Show ${_visible().length} items')),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   // ---------------------------------------------------------------- UI
-  Widget _thumb(YtItem item, {double radius = 12}) {
+  Widget _thumb(Entry e) {
+    final item = e.item;
     Widget placeholder(IconData icon) => Container(
           decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF2A2250), Color(0xFF3B2A6E)])),
           child: Center(child: Icon(icon, size: 40, color: Colors.white54)),
         );
-    final selected = _selected.contains(item.key);
+    final selected = _selected.contains(e.id);
+    final bad = item.status != 'working';
     return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
+      borderRadius: BorderRadius.circular(12),
       child: AspectRatio(
         aspectRatio: 16 / 9,
         child: Stack(
@@ -633,11 +1018,25 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
               Image.network(
                 item.thumbUrl,
                 fit: BoxFit.cover,
-                errorBuilder: (c, e, s) => placeholder(Icons.play_circle_outline),
+                errorBuilder: (c, err, s) => placeholder(Icons.play_circle_outline),
                 loadingBuilder: (c, child, p) => p == null ? child : placeholder(Icons.play_circle_outline),
               )
             else
               placeholder(item.isPlaylist ? Icons.playlist_play : Icons.link),
+            if (bad) Container(color: Colors.black.withOpacity(0.45)),
+            if (bad)
+              Positioned(
+                left: 6,
+                top: 6,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: _statusColor(item.status), borderRadius: BorderRadius.circular(4)),
+                  child: Text(
+                    item.status == 'unavailable' ? 'UNAVAILABLE' : 'KODI ERROR',
+                    style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
             if (item.isPlaylist)
               Positioned(
                 right: 6,
@@ -663,10 +1062,11 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _itemMenu(YtItem item) {
+  Widget _itemMenu(Entry e) {
+    final item = e.item;
     return PopupMenuButton<String>(
       padding: EdgeInsets.zero,
-      onSelected: (v) async {
+      onSelected: (v) {
         switch (v) {
           case 'open':
             _open(item);
@@ -675,53 +1075,65 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
             _copyLinks([item]);
             break;
           case 'edit':
-            _editTitle(item);
+            _editEntry(e);
             break;
           case 'expand':
             _failedPlaylists.remove(item.id);
-            _expandPlaylists(onlyId: item.id);
+            _expandPlaylists(e.file, onlyId: item.id);
+            break;
+          case 'working':
+          case 'unavailable':
+          case 'kodi_error':
+            _setStatus([e], v);
+            break;
+          case 'check':
+            _checkAvailability([e]);
             break;
           case 'move':
-            _moveItems([item]);
+            _moveEntries([e]);
             break;
           case 'delete':
-            _removeItems({item.key});
+            _deleteEntries([e]);
             break;
         }
       },
       itemBuilder: (c) => [
         const PopupMenuItem(value: 'open', child: Text('Open in YouTube')),
         const PopupMenuItem(value: 'copy', child: Text('Copy link')),
-        const PopupMenuItem(value: 'edit', child: Text('Edit title')),
+        const PopupMenuItem(value: 'edit', child: Text('Edit details')),
         if (item.isPlaylist) const PopupMenuItem(value: 'expand', child: Text('Expand into videos')),
+        if (item.isVideo) const PopupMenuItem(value: 'check', child: Text('Check if it plays')),
+        if (item.status != 'working') const PopupMenuItem(value: 'working', child: Text('Mark as working')),
+        if (item.status != 'unavailable') const PopupMenuItem(value: 'unavailable', child: Text('Mark as unavailable')),
+        if (item.status != 'kodi_error') const PopupMenuItem(value: 'kodi_error', child: Text('Mark as Kodi error')),
         const PopupMenuItem(value: 'move', child: Text('Move to another file')),
         const PopupMenuItem(value: 'delete', child: Text('Delete')),
       ],
     );
   }
 
-  void _tap(YtItem item) {
+  void _tap(Entry e) {
     if (_selected.isNotEmpty) {
       setState(() {
-        if (!_selected.add(item.key)) _selected.remove(item.key);
+        if (!_selected.add(e.id)) _selected.remove(e.id);
       });
     } else {
-      _open(item);
+      _open(e.item);
     }
   }
 
-  void _longPress(YtItem item) => setState(() => _selected.add(item.key));
-
-  Widget _card(YtItem item, {required bool compact}) {
+  Widget _card(Entry e, {required bool compact}) {
+    final item = e.item;
+    final showFile = _scope != _Scope.current;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: () => _tap(item),
-      onLongPress: () => _longPress(item),
+      onTap: () => _tap(e),
+      onLongPress: () => setState(() => _selected.add(e.id)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          _thumb(item),
+          _thumb(e),
           Padding(
             padding: const EdgeInsets.only(top: 8, left: 2),
             child: Row(
@@ -737,18 +1149,23 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontSize: compact ? 13 : 15, fontWeight: FontWeight.w600, height: 1.25),
                       ),
-                      if (!compact)
+                      if (!compact || showFile)
                         Padding(
                           padding: const EdgeInsets.only(top: 3),
                           child: Text(
-                            item.isPlaylist ? 'Playlist • tap to open' : (item.isOther ? 'Link' : 'YouTube video'),
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            [
+                              if (item.group.isNotEmpty) item.group,
+                              if (showFile) '${e.file.name}.m3u',
+                            ].join('  •  '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
                           ),
                         ),
                     ],
                   ),
                 ),
-                SizedBox(width: 32, height: 32, child: _itemMenu(item)),
+                SizedBox(width: 32, height: 32, child: _itemMenu(e)),
               ],
             ),
           ),
@@ -757,46 +1174,177 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
-    if (_selected.isNotEmpty) {
-      final chosen = _items.where((e) => _selected.contains(e.key)).toList();
-      return AppBar(
-        leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(_selected.clear)),
-        title: Text('${_selected.length} selected'),
-        actions: [
-          IconButton(
-            tooltip: _selected.length == _items.length ? 'Deselect all' : 'Select all',
-            icon: Icon(_selected.length == _items.length ? Icons.deselect : Icons.select_all),
-            onPressed: () => setState(() {
-              if (_selected.length == _items.length) {
-                _selected.clear();
-              } else {
-                _selected.addAll(_items.map((e) => e.key));
-              }
-            }),
+  Widget _fileChips() {
+    final primary = Theme.of(context).colorScheme.primary;
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              avatar: const Icon(Icons.library_books_outlined, size: 16),
+              label: const Text('All files'),
+              selected: _scope == _Scope.all,
+              selectedColor: primary,
+              onSelected: (_) => _setScope(_Scope.all),
+            ),
           ),
-          IconButton(tooltip: 'Copy links', icon: const Icon(Icons.copy), onPressed: () => _copyLinks(chosen)),
-          IconButton(tooltip: 'Move to another file', icon: const Icon(Icons.drive_file_move_outline), onPressed: () => _moveItems(chosen)),
-          IconButton(
-            tooltip: 'Delete',
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            onPressed: () => _removeItems(_selected.toSet()),
-          ),
+          ..._files.map((f) {
+            final isActive = f == _active;
+            final inView = _scope == _Scope.current ? isActive : (_scope == _Scope.custom && _customPaths.contains(f.path));
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                avatar: isActive ? const Icon(Icons.download_done, size: 16) : null,
+                label: Text('${f.name}.m3u'),
+                selected: inView,
+                selectedColor: primary,
+                onSelected: (_) => _switchTo(f),
+              ),
+            );
+          }),
+          ActionChip(avatar: const Icon(Icons.add, size: 18), label: const Text('New file'), onPressed: _newFile),
         ],
-      );
-    }
-    return AppBar(
-      title: const Text('M3U Files'),
+      ),
+    );
+  }
+
+  Widget _filterChips() {
+    final primary = Theme.of(context).colorScheme.primary;
+    final allOn = _type == 'all' && _status == 'all' && _group == null;
+    final unavailable = _unavailableCount;
+    return SizedBox(
+      height: 44,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: const Text('All'),
+              selected: allOn,
+              selectedColor: primary,
+              onSelected: (_) => setState(() {
+                _type = 'all';
+                _status = 'all';
+                _group = null;
+              }),
+            ),
+          ),
+          ..._groups().map((g) => Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ChoiceChip(
+                  label: Text(g),
+                  selected: _group == g,
+                  selectedColor: primary,
+                  onSelected: (v) => setState(() => _group = v ? g : null),
+                ),
+              )),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: const Text('Videos'),
+              selected: _type == 'video',
+              selectedColor: primary,
+              onSelected: (v) => setState(() => _type = v ? 'video' : 'all'),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: const Text('Playlists'),
+              selected: _type == 'playlist',
+              selectedColor: primary,
+              onSelected: (v) => setState(() => _type = v ? 'playlist' : 'all'),
+            ),
+          ),
+          if (unavailable > 0)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                avatar: const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orangeAccent),
+                label: Text('Unavailable ($unavailable)'),
+                selected: _status == 'unavailable',
+                selectedColor: Colors.redAccent,
+                onSelected: (v) => setState(() => _status = v ? 'unavailable' : 'all'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _searchField() {
+    return SizedBox(
+      height: 44,
+      child: TextField(
+        controller: _searchCtrl,
+        onChanged: (v) => setState(() => _query = v),
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: _scope == _Scope.current ? 'Search in ${_active?.name ?? ''}.m3u' : 'Search ${_scopeFiles.length} files',
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: _query.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    setState(() => _query = '');
+                  },
+                ),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 0),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+        ),
+      ),
+    );
+  }
+
+  Widget _normalBar() {
+    return SliverAppBar(
+      floating: true,
+      snap: true,
+      pinned: false,
+      toolbarHeight: 58,
+      titleSpacing: 12,
+      title: _searchField(),
       actions: [
         IconButton(
-          tooltip: _grid ? 'Big cards' : 'Grid view',
-          icon: Icon(_grid ? Icons.view_agenda_outlined : Icons.grid_view),
-          onPressed: _toggleGrid,
+          tooltip: 'Search & filters',
+          onPressed: _showFilterSheet,
+          icon: Badge(isLabelVisible: _filtersActive, smallSize: 9, child: const Icon(Icons.tune)),
         ),
-        IconButton(tooltip: 'Edit as text (full page)', icon: const Icon(Icons.edit_note), onPressed: _openEditor),
         PopupMenuButton<String>(
           onSelected: (v) {
             switch (v) {
+              case 'view':
+                _toggleGrid();
+                break;
+              case 'edit':
+                _openEditor();
+                break;
+              case 'check':
+                _checkAvailability(_visible());
+                break;
+              case 'tv':
+                _sendToTv();
+                break;
+              case 'copy':
+                _copyLinks(_visible().map((e) => e.item));
+                break;
+              case 'select':
+                setState(() => _selected.addAll(_visible().map((e) => e.id)));
+                break;
+              case 'expand':
+                _failedPlaylists.clear();
+                _postProcess();
+                break;
               case 'new':
                 _newFile();
                 break;
@@ -806,408 +1354,538 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
               case 'delete':
                 _deleteFile();
                 break;
-              case 'copy':
-                _copyLinks(_items);
+            }
+          },
+          itemBuilder: (c) => [
+            PopupMenuItem(value: 'view', child: Text(_grid ? 'Switch to big cards' : 'Switch to grid')),
+            const PopupMenuItem(value: 'edit', child: Text('Edit .m3u as text (full page)')),
+            const PopupMenuItem(value: 'check', child: Text('Check which videos play')),
+            const PopupMenuItem(value: 'tv', child: Text('Send this file to my TV')),
+            const PopupMenuItem(value: 'select', child: Text('Select all')),
+            const PopupMenuItem(value: 'copy', child: Text('Copy links')),
+            const PopupMenuItem(value: 'expand', child: Text('Expand playlists / fetch titles')),
+            const PopupMenuItem(value: 'new', child: Text('New .m3u file')),
+            const PopupMenuItem(value: 'rename', child: Text('Rename this file')),
+            const PopupMenuItem(value: 'delete', child: Text('Delete this file')),
+          ],
+        ),
+      ],
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(92),
+        child: Column(children: [_fileChips(), _filterChips()]),
+      ),
+    );
+  }
+
+  Widget _selectionBar(List<Entry> visible) {
+    final chosen = _chosen();
+    final allSelected = visible.isNotEmpty && visible.every((e) => _selected.contains(e.id));
+    return SliverAppBar(
+      pinned: true,
+      leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(_selected.clear)),
+      title: Text('${_selected.length} selected'),
+      actions: [
+        IconButton(
+          tooltip: allSelected ? 'Deselect all' : 'Select all',
+          icon: Icon(allSelected ? Icons.deselect : Icons.select_all),
+          onPressed: () => setState(() {
+            if (allSelected) {
+              _selected.clear();
+            } else {
+              _selected.addAll(visible.map((e) => e.id));
+            }
+          }),
+        ),
+        IconButton(tooltip: 'Copy links', icon: const Icon(Icons.copy), onPressed: () => _copyLinks(chosen.map((e) => e.item))),
+        IconButton(tooltip: 'Move to another file', icon: const Icon(Icons.drive_file_move_outline), onPressed: () => _moveEntries(chosen)),
+        IconButton(
+          tooltip: 'Delete',
+          icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+          onPressed: () => _deleteEntries(chosen),
+        ),
+        PopupMenuButton<String>(
+          onSelected: (v) {
+            switch (v) {
+              case 'group':
+                _setGroup(chosen);
                 break;
-              case 'expand':
-                _failedPlaylists.clear();
-                _postProcess();
+              case 'check':
+                _checkAvailability(chosen);
                 break;
-              case 'select':
-                setState(() => _selected.addAll(_items.map((e) => e.key)));
-                break;
+              default:
+                _setStatus(chosen, v);
             }
           },
           itemBuilder: (c) => const [
-            PopupMenuItem(value: 'new', child: Text('New .m3u file')),
-            PopupMenuItem(value: 'select', child: Text('Select all')),
-            PopupMenuItem(value: 'copy', child: Text('Copy all links')),
-            PopupMenuItem(value: 'expand', child: Text('Expand playlists / fetch titles')),
-            PopupMenuItem(value: 'rename', child: Text('Rename this file')),
-            PopupMenuItem(value: 'delete', child: Text('Delete this file')),
+            PopupMenuItem(value: 'group', child: Text('Move to category…')),
+            PopupMenuItem(value: 'check', child: Text('Check which play')),
+            PopupMenuItem(value: 'working', child: Text('Mark as working')),
+            PopupMenuItem(value: 'unavailable', child: Text('Mark as unavailable')),
+            PopupMenuItem(value: 'kodi_error', child: Text('Mark as Kodi error')),
           ],
         ),
       ],
     );
   }
 
-  Widget _buildFeed() {
-    if (_items.isEmpty) {
-      return Center(
+  Widget _infoHeader(int shown) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final unav = _unavailableCount;
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: primary.withOpacity(0.14),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: primary.withOpacity(0.5)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.share, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'YouTube → Share → TubeBox saves straight into "${_active?.name}.m3u"',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                ),
+              ]),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 8, left: 2),
+              child: Row(children: [
+                Text(
+                  '$shown item(s)${_scope == _Scope.current ? '' : ' in ${_scopeFiles.length} files'}',
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                if (unav > 0)
+                  Text('  •  $unav unavailable', style: const TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+                if (_busy != null) ...[
+                  const SizedBox(width: 10),
+                  const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                  const SizedBox(width: 6),
+                  Flexible(child: Text(_busy!, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Colors.grey))),
+                ],
+              ]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    final filtered = _query.isNotEmpty || _type != 'all' || _status != 'all' || _group != null;
+    return SliverFillRemaining(
+      hasScrollBody: false,
+      child: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.video_library_outlined, size: 56, color: Colors.white24),
+              Icon(filtered ? Icons.search_off : Icons.video_library_outlined, size: 56, color: Colors.white24),
               const SizedBox(height: 12),
               Text(
-                'No videos in "${_active?.name}.m3u" yet.\nPaste links above, or share a video from the YouTube app.',
+                filtered
+                    ? 'Nothing matches your search or filters.'
+                    : 'No videos in "${_active?.name}.m3u" yet.\nTap "Add links", or share a video from the YouTube app.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.grey),
               ),
+              if (filtered)
+                TextButton(
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    setState(() => _query = '');
+                    _resetFilters();
+                  },
+                  child: const Text('Clear search & filters'),
+                ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = _ready ? _visible() : <Entry>[];
+    final selecting = _selected.isNotEmpty;
+    final width = MediaQuery.of(context).size.width;
+    const pad = 12.0, gap = 12.0;
+    final cellW = (width - pad * 2 - gap) / 2;
+
+    Widget content;
+    if (visible.isEmpty) {
+      content = _emptyState();
+    } else if (_grid) {
+      content = SliverPadding(
+        padding: const EdgeInsets.fromLTRB(pad, 4, pad, 96),
+        sliver: SliverGrid(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: gap,
+            mainAxisSpacing: 14,
+            mainAxisExtent: cellW * 9 / 16 + (_scope == _Scope.current ? 66 : 84),
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, i) => _card(visible[i], compact: true),
+            childCount: visible.length,
+          ),
+        ),
+      );
+    } else {
+      content = SliverPadding(
+        padding: const EdgeInsets.fromLTRB(pad, 4, pad, 96),
+        sliver: SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, i) => i.isOdd ? const SizedBox(height: 18) : _card(visible[i ~/ 2], compact: false),
+            childCount: visible.length * 2 - 1,
           ),
         ),
       );
     }
-    final feed = _grid
-        ? LayoutBuilder(builder: (context, c) {
-            const pad = 12.0, gap = 12.0;
-            final w = (c.maxWidth - pad * 2 - gap) / 2;
-            return GridView.builder(
-              padding: const EdgeInsets.fromLTRB(pad, 4, pad, 24),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: gap,
-                mainAxisSpacing: 14,
-                mainAxisExtent: w * 9 / 16 + 62,
-              ),
-              itemCount: _items.length,
-              itemBuilder: (context, i) => _card(_items[i], compact: true),
-            );
-          })
-        : ListView.separated(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
-            itemCount: _items.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 18),
-            itemBuilder: (context, i) => _card(_items[i], compact: false),
-          );
-    return RefreshIndicator(onRefresh: _refresh, child: feed);
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    final primary = Theme.of(context).colorScheme.primary;
     return Scaffold(
-      appBar: _buildAppBar(),
+      floatingActionButton: ValueListenableBuilder<bool>(
+        valueListenable: widget.navVisible,
+        builder: (context, vis, _) => AnimatedScale(
+          scale: (vis && !selecting && _ready) ? 1 : 0,
+          duration: const Duration(milliseconds: 180),
+          child: FloatingActionButton.extended(
+            onPressed: _showAddSheet,
+            icon: const Icon(Icons.add_link),
+            label: const Text('Add links'),
+          ),
+        ),
+      ),
       body: !_ready
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                SizedBox(
-                  height: 56,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    children: [
-                      ..._files.map((f) => Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              avatar: f == _active ? const Icon(Icons.download_done, size: 16) : null,
-                              label: Text('${f.name}.m3u'),
-                              selected: f == _active,
-                              selectedColor: primary,
-                              onSelected: (_) => _switchTo(f),
-                            ),
-                          )),
-                      ActionChip(
-                        avatar: const Icon(Icons.add, size: 18),
-                        label: const Text('New file'),
-                        onPressed: _newFile,
-                      ),
-                    ],
-                  ),
+          : NotificationListener<UserScrollNotification>(
+              onNotification: (n) {
+                if (n.depth != 0) return false;
+                if (n.metrics.pixels <= 8 || n.direction == ScrollDirection.forward) {
+                  widget.navVisible.value = true;
+                } else if (n.direction == ScrollDirection.reverse) {
+                  widget.navVisible.value = false;
+                }
+                return false;
+              },
+              child: RefreshIndicator(
+                onRefresh: _refresh,
+                edgeOffset: 60,
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    selecting ? _selectionBar(visible) : _normalBar(),
+                    _infoHeader(visible.length),
+                    content,
+                  ],
                 ),
-                Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.symmetric(horizontal: 12),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-                  decoration: BoxDecoration(
-                    color: primary.withOpacity(0.14),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: primary.withOpacity(0.5)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.share, size: 16),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'YouTube → Share → TubeBox saves straight into "${_active?.name}.m3u"',
-                          style: const TextStyle(fontSize: 12.5),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _addCtrl,
-                          minLines: 1,
-                          maxLines: 3,
-                          decoration: const InputDecoration(
-                            hintText: 'Paste video or playlist links…',
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      IconButton(tooltip: 'Paste', onPressed: _pasteFromClipboard, icon: const Icon(Icons.paste)),
-                      FilledButton(
-                        onPressed: _busy == null ? _addFromText : null,
-                        style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16)),
-                        child: const Text('Add'),
-                      ),
-                    ],
-                  ),
-                ),
-                if (_busy != null)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
-                    child: Row(
-                      children: [
-                        const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                        const SizedBox(width: 10),
-                        Text(_busy!, style: const TextStyle(fontSize: 12.5, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('${_items.length} item(s)', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                  ),
-                ),
-                Expanded(child: _buildFeed()),
-              ],
+              ),
             ),
     );
   }
 }
 
 // ============================================================================
-// FULL-PAGE .m3u TEXT EDITOR  (select all, cut, copy, paste, undo, redo, save)
+// ADD SHEET: paste links (videos, playlists or whole M3U text) and choose the
+// target file; optionally Kodi style category + chapter numbering.
 // ============================================================================
-class M3uEditorScreen extends StatefulWidget {
-  final M3uFile file;
-  const M3uEditorScreen({Key? key, required this.file}) : super(key: key);
+class _AddSheet extends StatefulWidget {
+  final YtStore store;
+  final List<M3uFile> files;
+  final M3uFile active;
+  const _AddSheet({required this.store, required this.files, required this.active});
 
   @override
-  _M3uEditorScreenState createState() => _M3uEditorScreenState();
+  _AddSheetState createState() => _AddSheetState();
 }
 
-class _M3uEditorScreenState extends State<M3uEditorScreen> {
-  final TextEditingController _ctrl = TextEditingController();
-  final FocusNode _focus = FocusNode();
-  final UndoHistoryController _undo = UndoHistoryController();
-  bool _loading = true;
-  bool _dirty = false;
-  String _saved = '';
+class _AddSheetState extends State<_AddSheet> {
+  final TextEditingController _text = TextEditingController();
+  final TextEditingController _chapter = TextEditingController();
+  final TextEditingController _name = TextEditingController();
+
+  late M3uFile _file;
+  bool _numbered = false;
+  List<String> _children = ['Lakshya'];
+  List<String> _subjects = ['English', 'Math'];
+  String _child = 'Lakshya';
+  String _subject = 'English';
+  List<YtItem> _fileItems = [];
+
+  String get _group => '$_child - $_subject';
 
   @override
   void initState() {
     super.initState();
+    _file = widget.active;
     _load();
+    _prefillFromClipboard();
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
-    _focus.dispose();
-    _undo.dispose();
+    _text.dispose();
+    _chapter.dispose();
+    _name.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
-    try {
-      final f = File(widget.file.path);
-      _saved = await f.exists() ? await f.readAsString() : '';
-    } catch (e) {
-      _saved = '';
-    }
-    _ctrl.text = _saved;
-    _ctrl.addListener(() {
-      if (mounted) setState(() => _dirty = _ctrl.text != _saved);
-    });
-    if (mounted) setState(() => _loading = false);
-  }
-
-  void _snack(String msg, {bool success = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      backgroundColor: success ? Colors.green : Colors.redAccent,
-      duration: const Duration(seconds: 2),
-    ));
-  }
-
-  TextSelection get _sel => _ctrl.selection;
-  bool get _hasSel => _sel.isValid && !_sel.isCollapsed;
-
-  void _selectAll() {
-    _focus.requestFocus();
-    _ctrl.selection = TextSelection(baseOffset: 0, extentOffset: _ctrl.text.length);
-  }
-
-  Future<void> _copy() async {
-    final text = _hasSel ? _sel.textInside(_ctrl.text) : _ctrl.text;
-    await Clipboard.setData(ClipboardData(text: text));
-    _snack(_hasSel ? 'Copied selection' : 'Nothing selected - copied the whole file', success: true);
-  }
-
-  Future<void> _cut() async {
-    if (!_hasSel) {
-      _snack('Select some text first (or use Select all).');
-      return;
-    }
-    await Clipboard.setData(ClipboardData(text: _sel.textInside(_ctrl.text)));
-    _replaceSelection('');
-  }
-
-  Future<void> _paste() async {
+  Future<void> _prefillFromClipboard() async {
     final data = await Clipboard.getData('text/plain');
-    if (data?.text == null || data!.text!.isEmpty) {
-      _snack('Clipboard is empty.');
-      return;
-    }
-    _replaceSelection(data.text!);
-  }
-
-  void _replaceSelection(String insert) {
-    final text = _ctrl.text;
-    final start = _sel.isValid ? _sel.start : text.length;
-    final end = _sel.isValid ? _sel.end : text.length;
-    final newText = text.replaceRange(start, end, insert);
-    _ctrl.value = TextEditingValue(text: newText, selection: TextSelection.collapsed(offset: start + insert.length));
-    _focus.requestFocus();
-  }
-
-  void _clearAll() {
-    _ctrl.value = const TextEditingValue(text: '#EXTM3U\n', selection: TextSelection.collapsed(offset: 8));
-  }
-
-  Future<bool> _save() async {
-    try {
-      await File(widget.file.path).writeAsString(_ctrl.text);
-      _saved = _ctrl.text;
-      setState(() => _dirty = false);
-      _snack('Saved ${widget.file.name}.m3u', success: true);
-      return true;
-    } catch (e) {
-      _snack('Could not save: $e');
-      return false;
+    final t = data?.text ?? '';
+    if (mounted && _text.text.isEmpty && (t.contains('youtu') || t.contains('#EXTINF'))) {
+      setState(() => _text.text = t);
     }
   }
 
-  Future<void> _confirmLeave() async {
-    final choice = await showDialog<String>(
+  Future<void> _load() async {
+    final children = await widget.store.loadChildren();
+    final subjects = await widget.store.loadSubjects();
+    if (!mounted) return;
+    setState(() {
+      _children = children;
+      _subjects = subjects;
+      _child = children.first;
+      _subject = subjects.first;
+    });
+    await _loadFile();
+  }
+
+  Future<void> _loadFile() async {
+    final items = await widget.store.load(_file);
+    if (!mounted) return;
+    setState(() {
+      _fileItems = items;
+      _numbered = items.any((e) => e.chapter != null) || _file.name == 'Master_Playlist';
+    });
+    _updateChapter();
+  }
+
+  void _updateChapter() {
+    _chapter.text = nextChapter(_fileItems, _group).toString();
+  }
+
+  Future<String?> _prompt(String title, String hint) async {
+    final ctrl = TextEditingController();
+    return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Unsaved changes'),
-        content: const Text('Save your changes to this .m3u file before leaving?'),
+        title: Text(title),
+        content: TextField(controller: ctrl, autofocus: true, textCapitalization: TextCapitalization.words, decoration: InputDecoration(hintText: hint)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text('Keep editing')),
-          TextButton(onPressed: () => Navigator.pop(ctx, 'discard'), child: const Text('Discard', style: TextStyle(color: Colors.redAccent))),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('Save')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('Add')),
         ],
       ),
     );
-    if (!mounted) return;
-    if (choice == 'save') {
-      if (await _save() && mounted) Navigator.pop(context, true);
-    } else if (choice == 'discard') {
-      Navigator.pop(context, false);
-    }
   }
 
-  Widget _tool(IconData icon, String label, VoidCallback? onTap) {
+  Widget _selector({
+    required String label,
+    required String value,
+    required List<String> items,
+    required ValueChanged<String> onChanged,
+    required VoidCallback onAdd,
+    required VoidCallback onRemove,
+  }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: TextButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        label: Text(label),
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              value: value,
+              isExpanded: true,
+              decoration: InputDecoration(labelText: label),
+              items: items.map((c) => DropdownMenuItem(value: c, child: Text(c, overflow: TextOverflow.ellipsis))).toList(),
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
+            ),
+          ),
+          const SizedBox(width: 6),
+          IconButton.filledTonal(onPressed: onAdd, tooltip: 'Add', icon: const Icon(Icons.add)),
+          IconButton.filledTonal(
+            onPressed: onRemove,
+            tooltip: 'Remove this one',
+            style: IconButton.styleFrom(foregroundColor: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _submit() {
+    final text = _text.text.trim();
+    if (text.isEmpty) return;
+    Navigator.pop(
+      context,
+      _AddRequest(
+        text: text,
+        file: _file,
+        numbered: _numbered,
+        group: _group,
+        subject: _subject,
+        startChapter: _numbered ? int.tryParse(_chapter.text.trim()) : null,
+        customName: _name.text.trim(),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final lines = _ctrl.text.isEmpty ? 0 : '\n'.allMatches(_ctrl.text).length + 1;
-    return PopScope(
-      canPop: !_dirty,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) _confirmLeave();
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text('${widget.file.name}.m3u${_dirty ? ' •' : ''}', overflow: TextOverflow.ellipsis),
-          actions: [
-            ValueListenableBuilder<UndoHistoryValue>(
-              valueListenable: _undo,
-              builder: (context, v, _) => Row(children: [
-                IconButton(tooltip: 'Undo', icon: const Icon(Icons.undo), onPressed: v.canUndo ? _undo.undo : null),
-                IconButton(tooltip: 'Redo', icon: const Icon(Icons.redo), onPressed: v.canRedo ? _undo.redo : null),
-              ]),
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Add links', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _text,
+              minLines: 3,
+              maxLines: 6,
+              decoration: const InputDecoration(hintText: 'Paste video links, playlist links, or full M3U text…'),
             ),
-            IconButton(
-              tooltip: 'Save',
-              icon: Icon(Icons.save, color: _dirty ? Colors.greenAccent : null),
-              onPressed: _dirty ? _save : null,
+            Row(children: [
+              TextButton.icon(
+                onPressed: () async {
+                  final d = await Clipboard.getData('text/plain');
+                  if (d?.text != null) setState(() => _text.text = d!.text!);
+                },
+                icon: const Icon(Icons.paste, size: 18),
+                label: const Text('Paste'),
+              ),
+              TextButton.icon(
+                onPressed: () => setState(() => _text.clear()),
+                icon: const Icon(Icons.clear, size: 18),
+                label: const Text('Clear'),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            DropdownButtonFormField<M3uFile>(
+              value: widget.files.contains(_file) ? _file : null,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Save into file'),
+              items: widget.files.map((f) => DropdownMenuItem(value: f, child: Text('${f.name}.m3u'))).toList(),
+              onChanged: (f) {
+                if (f == null) return;
+                setState(() => _file = f);
+                _loadFile();
+              },
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Kodi style: category + chapter numbers'),
+              subtitle: const Text('Titles become "CH3: …" inside "Child - Subject"', style: TextStyle(fontSize: 12)),
+              value: _numbered,
+              onChanged: (v) {
+                setState(() => _numbered = v);
+                _updateChapter();
+              },
+            ),
+            if (_numbered) ...[
+              _selector(
+                label: 'Child profile',
+                value: _child,
+                items: _children,
+                onChanged: (v) {
+                  setState(() => _child = v);
+                  _updateChapter();
+                },
+                onAdd: () async {
+                  final n = await _prompt('Add child profile', 'Enter name');
+                  if (n == null || n.isEmpty || _children.contains(n)) return;
+                  setState(() {
+                    _children = [..._children, n];
+                    _child = n;
+                  });
+                  await widget.store.saveChildren(_children);
+                  _updateChapter();
+                },
+                onRemove: () async {
+                  if (_children.length <= 1) return;
+                  setState(() {
+                    _children = _children.where((c) => c != _child).toList();
+                    _child = _children.first;
+                  });
+                  await widget.store.saveChildren(_children);
+                  _updateChapter();
+                },
+              ),
+              _selector(
+                label: 'Subject',
+                value: _subject,
+                items: _subjects,
+                onChanged: (v) {
+                  setState(() => _subject = v);
+                  _updateChapter();
+                },
+                onAdd: () async {
+                  final n = await _prompt('Add subject', 'e.g. Hindi, GK');
+                  if (n == null || n.isEmpty || _subjects.contains(n)) return;
+                  setState(() {
+                    _subjects = [..._subjects, n];
+                    _subject = n;
+                  });
+                  await widget.store.saveSubjects(_subjects);
+                  _updateChapter();
+                },
+                onRemove: () async {
+                  if (_subjects.length <= 1) return;
+                  setState(() {
+                    _subjects = _subjects.where((s) => s != _subject).toList();
+                    _subject = _subjects.first;
+                  });
+                  await widget.store.saveSubjects(_subjects);
+                  _updateChapter();
+                },
+              ),
+              Row(children: [
+                Expanded(
+                  flex: 1,
+                  child: TextField(
+                    controller: _chapter,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Chapter No.'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: TextField(controller: _name, decoration: const InputDecoration(labelText: 'Custom name (optional)')),
+                ),
+              ]),
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('Category: $_group', style: const TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+              ),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 52,
+              child: FilledButton.icon(
+                onPressed: _submit,
+                icon: const Icon(Icons.add_link),
+                label: Text('Add to ${_file.name}.m3u', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
             ),
           ],
         ),
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                children: [
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-                      child: TextField(
-                        controller: _ctrl,
-                        focusNode: _focus,
-                        undoController: _undo,
-                        expands: true,
-                        maxLines: null,
-                        minLines: null,
-                        textAlignVertical: TextAlignVertical.top,
-                        keyboardType: TextInputType.multiline,
-                        enableSuggestions: false,
-                        autocorrect: false,
-                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13, height: 1.35),
-                        decoration: const InputDecoration(hintText: '#EXTM3U …', contentPadding: EdgeInsets.all(12)),
-                      ),
-                    ),
-                  ),
-                  Container(
-                    color: kEditorBar,
-                    child: SafeArea(
-                      top: false,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
-                            child: Row(children: [
-                              _tool(Icons.select_all, 'Select all', _selectAll),
-                              _tool(Icons.content_cut, 'Cut', _cut),
-                              _tool(Icons.copy, 'Copy', _copy),
-                              _tool(Icons.paste, 'Paste', _paste),
-                              _tool(Icons.delete_sweep, 'Clear', _clearAll),
-                              _tool(Icons.save, 'Save', _dirty ? _save : null),
-                            ]),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Text('$lines lines • ${_ctrl.text.length} characters', style: const TextStyle(color: Colors.grey, fontSize: 11)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
       ),
     );
   }
 }
-
-const Color kEditorBar = Color(0xFF1B1633);
