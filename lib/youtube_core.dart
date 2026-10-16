@@ -58,7 +58,7 @@ class YtItem {
 
   String get webUrl => isPlaylist
       ? 'https://www.youtube.com/playlist?list=$id'
-      : (isOther ? id : 'https://www.youtube.com/watch?v=$id');
+      : (isOther ? id : 'https://youtu.be/$id');
 
   String get kodiUrl => isPlaylist
       ? 'plugin://plugin.video.youtube/play/?playlist_id=$id&order=default&play=1'

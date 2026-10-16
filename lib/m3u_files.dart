@@ -1,3 +1,4 @@
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -590,11 +591,15 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       _snack('This entry is not a YouTube link.');
       return;
     }
-    if (item.isVideo) {
-      try {
-        // Straight into the YouTube app; falls through to the web page if it is missing.
-        if (await launchUrl(Uri.parse('vnd.youtube://${item.id}'), mode: LaunchMode.externalApplication)) return;
-      } catch (_) {}
+    if (!item.isOther) {
+      // Same link the YouTube share button gives (youtu.be/ID), sent straight
+      // to the YouTube app, so it behaves exactly like tapping a shared link.
+      for (final pkg in const ['com.google.android.youtube', 'com.google.android.youtube.tv']) {
+        try {
+          await AndroidIntent(action: 'action_view', data: item.webUrl, package: pkg).launch();
+          return;
+        } catch (_) {}
+      }
     }
     try {
       final ok = await launchUrl(Uri.parse(item.webUrl), mode: LaunchMode.externalApplication);
