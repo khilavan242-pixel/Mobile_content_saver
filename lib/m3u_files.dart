@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'm3u_editor.dart';
 import 'm3u_store.dart';
+import 'player_screen.dart';
 import 'tv_sync.dart';
 import 'youtube_core.dart';
 
@@ -1073,6 +1074,9 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       padding: EdgeInsets.zero,
       onSelected: (v) {
         switch (v) {
+          case 'play':
+            _play(e);
+            break;
           case 'open':
             _open(item);
             break;
@@ -1103,6 +1107,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         }
       },
       itemBuilder: (c) => [
+        const PopupMenuItem(value: 'play', child: Text('Play in TubeBox')),
         const PopupMenuItem(value: 'open', child: Text('Open in YouTube')),
         const PopupMenuItem(value: 'copy', child: Text('Copy link')),
         const PopupMenuItem(value: 'edit', child: Text('Edit details')),
@@ -1123,8 +1128,24 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         if (!_selected.add(e.id)) _selected.remove(e.id);
       });
     } else {
-      _open(e.item);
+      _play(e);
     }
+  }
+
+  /// Plays inside TubeBox; the queue is every playable item currently shown.
+  void _play(Entry e) {
+    if (e.item.isOther) {
+      _open(e.item);
+      return;
+    }
+    final shown = _visible().where((x) => !x.item.isOther).toList();
+    int start = shown.indexWhere((x) => x.id == e.id);
+    final queue = shown.map((x) => x.item).toList();
+    if (start < 0) {
+      queue.insert(0, e.item);
+      start = 0;
+    }
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlayerScreen(queue: queue, startIndex: start)));
   }
 
   Widget _card(Entry e, {required bool compact}) {
