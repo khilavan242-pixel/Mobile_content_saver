@@ -30,7 +30,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final WebViewController _web;
   final FocusNode _root = FocusNode(debugLabel: 'player-root');
   final FocusNode _playNode = FocusNode(debugLabel: 'player-play');
-  final ScrollController _strip = ScrollController();
+  final FocusNode _seekNode = FocusNode(debugLabel: 'player-seek');
+  final ScrollController _overlayScroll = ScrollController();
+  bool _wide = false;
+  bool _seekFocused = false;
+  int _repeatCount = 0;
   bool _inited = false;
   bool _captions = false;
   bool _ended = false;
@@ -81,7 +85,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _skipTimer?.cancel();
     _root.dispose();
     _playNode.dispose();
-    _strip.dispose();
+    _seekNode.dispose();
+    _overlayScroll.dispose();
     _pos.dispose();
     _dur.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
@@ -96,6 +101,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _inited = true;
     final size = MediaQuery.of(context).size;
     if (size.width > size.height && size.width >= 700) {
+      _wide = true;
       // TV / wide screen: open straight in full screen like the YouTube TV app.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && !_full) _toggleFull();
@@ -348,24 +354,36 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     });
   }
 
-  void _showControls() {
+  void _showControls({bool focusSeek = false}) {
     if (!_controlsVisible) {
       setState(() => _controlsVisible = true);
-      // Put the remote's focus on the play button, like the YouTube TV app.
+      // Remote focus goes to the play button (Up goes to the time bar first).
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _full && !_playNode.hasFocus) _playNode.requestFocus();
+        if (!mounted || !_full) return;
+        (focusSeek ? _seekNode : _playNode).requestFocus();
       });
     }
     _scheduleHide();
   }
 
+  void _hideControls() {
+    _hideTimer?.cancel();
+    if (!_controlsVisible) return;
+    setState(() => _controlsVisible = false);
+    _root.requestFocus();
+  }
+
   void _scheduleHide() {
     _hideTimer?.cancel();
     if (!_full || !_playing) return;
-    _hideTimer = Timer(const Duration(seconds: 6), () {
+    _hideTimer = Timer(const Duration(seconds: 7), () {
       if (!mounted) return;
-      setState(() => _controlsVisible = false);
-      _root.requestFocus();
+      // Keep the overlay open while someone is browsing the video list.
+      if (_overlayScroll.hasClients && _overlayScroll.offset > 20) {
+        _scheduleHide();
+        return;
+      }
+      _hideControls();
     });
   }
 
@@ -429,7 +447,8 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     }
     if (_full) {
       if (!_controlsVisible) {
-        // Controls hidden: arrows seek, OK pauses/plays, anything shows controls.
+        // Controls hidden. Left / right skip, Up / Down / OK open the controls
+        // together with the "up next" videos (like the YouTube TV app).
         if (k == LogicalKeyboardKey.arrowRight) {
           _seekBy(10);
           return KeyEventResult.handled;
@@ -438,16 +457,36 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           _seekBy(-10);
           return KeyEventResult.handled;
         }
-        if (k == LogicalKeyboardKey.select || k == LogicalKeyboardKey.enter) {
-          _togglePlay();
-          return KeyEventResult.handled;
-        }
-        _showControls();
+        _showControls(focusSeek: k == LogicalKeyboardKey.arrowUp);
         return KeyEventResult.handled;
       }
       _scheduleHide();
     }
     return KeyEventResult.ignored;
+  }
+
+  /// Time bar: hold Right / Left to keep scrubbing forward / back, faster the
+  /// longer the key is held. The video jumps there when the key is released.
+  KeyEventResult _onSeekKey(FocusNode node, KeyEvent event) {
+    final k = event.logicalKey;
+    final left = k == LogicalKeyboardKey.arrowLeft;
+    final right = k == LogicalKeyboardKey.arrowRight;
+    if (!left && !right) return KeyEventResult.ignored;
+    if (event is KeyUpEvent) {
+      _repeatCount = 0;
+      if (_seeking) _seekTo(_pos.value, now: true);
+      return KeyEventResult.handled;
+    }
+    if (event is KeyDownEvent) {
+      _repeatCount = 0;
+    } else {
+      _repeatCount++;
+    }
+    final step = (5 + _repeatCount * 2).clamp(5, 60).toInt();
+    final dur = _dur.value;
+    final next = (_pos.value + (right ? step : -step)).clamp(0.0, dur > 0 ? dur : double.infinity).toDouble();
+    _seekTo(next);
+    return KeyEventResult.handled;
   }
 
   // ------------------------------------------------------------------ build
@@ -491,8 +530,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             onTap: () {
               if (_full) {
                 if (_controlsVisible) {
-                  setState(() => _controlsVisible = false);
-                  _root.requestFocus();
+                  _hideControls();
                 } else {
                   _showControls();
                 }
@@ -530,35 +568,68 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
   }
 
   Widget _seekBar() {
-    return ValueListenableBuilder<double>(
-      valueListenable: _dur,
-      builder: (context, dur, _) => ValueListenableBuilder<double>(
-        valueListenable: _pos,
-        builder: (context, pos, __) {
-          final max = dur > 0 ? dur : 1.0;
-          final value = pos.clamp(0, max).toDouble();
-          return Row(children: [
-            Text(_fmt(pos), style: const TextStyle(fontSize: 13)),
-            Expanded(
-              child: SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  tickMarkShape: SliderTickMarkShape.noTickMark,
-                  trackHeight: 5,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
-                ),
-                child: Slider(
-                value: value,
-                min: 0,
-                max: max,
-                divisions: dur >= 20 ? (dur / 10).round() : null,
-                onChanged: dur > 0 ? (v) => _seekTo(v) : null,
-                onChangeEnd: dur > 0 ? (v) => _seekTo(v, now: true) : null,
-              ),
-              ),
-            ),
-            Text(_fmt(dur), style: const TextStyle(fontSize: 13)),
-          ]);
-        },
+    final primary = Theme.of(context).colorScheme.primary;
+    return Focus(
+      focusNode: _seekNode,
+      onFocusChange: (f) => setState(() => _seekFocused = f),
+      onKeyEvent: _onSeekKey,
+      child: ValueListenableBuilder<double>(
+        valueListenable: _dur,
+        builder: (context, dur, _) => ValueListenableBuilder<double>(
+          valueListenable: _pos,
+          builder: (context, pos, __) {
+            final frac = dur > 0 ? (pos / dur).clamp(0.0, 1.0).toDouble() : 0.0;
+            final h = _seekFocused ? 12.0 : 6.0;
+            return Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                Text(_fmt(pos), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                const Spacer(),
+                Text(_fmt(dur), style: const TextStyle(fontSize: 15, color: Colors.white70)),
+              ]),
+              const SizedBox(height: 6),
+              LayoutBuilder(builder: (context, c) {
+                void touch(double dx) {
+                  if (dur > 0) _seekTo((dx / c.maxWidth).clamp(0.0, 1.0) * dur, now: true);
+                }
+
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => touch(d.localPosition.dx),
+                  onHorizontalDragUpdate: (d) => touch(d.localPosition.dx),
+                  child: SizedBox(
+                    height: 24,
+                    child: Stack(alignment: Alignment.centerLeft, clipBehavior: Clip.none, children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        height: h,
+                        decoration: BoxDecoration(color: Colors.white30, borderRadius: BorderRadius.circular(h)),
+                      ),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        height: h,
+                        width: c.maxWidth * frac,
+                        decoration: BoxDecoration(color: primary, borderRadius: BorderRadius.circular(h)),
+                      ),
+                      Positioned(
+                        left: (c.maxWidth * frac - (_seekFocused ? 11 : 7)).clamp(0.0, c.maxWidth).toDouble(),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 120),
+                          width: _seekFocused ? 22 : 14,
+                          height: _seekFocused ? 22 : 14,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: primary, width: _seekFocused ? 4 : 2),
+                          ),
+                        ),
+                      ),
+                    ]),
+                  ),
+                );
+              }),
+            ]);
+          },
+        ),
       ),
     );
   }
@@ -606,152 +677,165 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     ]);
   }
 
-  /// YouTube-TV style overlay: title on top, seek bar, three button groups and
-  /// the "Up next" strip underneath. Every part is reachable with the D-pad.
+  /// YouTube-TV style overlay. First screen: title on top, time bar and all
+  /// buttons at the bottom, with the first row of "up next" videos peeking in.
+  /// Press Down and the next 3 videos appear, again and the next 3, and so on.
   Widget _fullOverlay() {
     final it = _current;
     final primary = Theme.of(context).colorScheme.primary;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_strip.hasClients && widget.queue.length > 1) {
-        final target = (_index * 196.0 - 40).clamp(0.0, _strip.position.maxScrollExtent).toDouble();
-        if ((_strip.offset - target).abs() > 400) _strip.jumpTo(target);
-      }
-    });
-    return Column(children: [
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(28, 18, 28, 36),
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black, Colors.transparent]),
-        ),
-        child: Row(children: [
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(
-                it.hasRealTitle ? it.plainTitle : 'YouTube ${it.isPlaylist ? 'playlist' : 'video'}',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, height: 1.2),
-              ),
-              if (widget.queue.length > 1)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text('Playing ${_index + 1} of ${widget.queue.length}', style: const TextStyle(color: Colors.white70)),
+    // Upcoming videos first (after the current one), then the earlier ones.
+    final order = <int>[
+      for (int i = _index + 1; i < widget.queue.length; i++) i,
+      for (int i = 0; i < _index; i++) i,
+    ];
+    const peek = 150.0;
+    return LayoutBuilder(builder: (context, c) {
+      final cardW = (c.maxWidth - 56 - 24) / 3;
+      return ListView(
+        controller: _overlayScroll,
+        padding: EdgeInsets.zero,
+        children: [
+          SizedBox(
+            height: (c.maxHeight - peek).clamp(260.0, 4000.0).toDouble(),
+            child: Column(children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(28, 16, 28, 36),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(_playing ? 0.85 : 1.0), Colors.transparent]),
                 ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(
+                    it.hasRealTitle ? it.plainTitle : 'YouTube ${it.isPlaylist ? 'playlist' : 'video'}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700, height: 1.2),
+                  ),
+                  if (widget.queue.length > 1)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text('Playing ${_index + 1} of ${widget.queue.length}', style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                    ),
+                ]),
+              ),
+              if (_errorCode != null) Padding(padding: const EdgeInsets.symmetric(horizontal: 28), child: _errorCard()),
+              const Spacer(),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(28, 36, 28, 10),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black.withOpacity(0.92)]),
+                ),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  _seekBar(),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    // left group
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(spacing: 10, children: [
+                          IconButton.filledTonal(
+                            tooltip: 'Repeat',
+                            onPressed: _cycleRepeat,
+                            icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? null : primary),
+                          ),
+                          FilledButton.tonalIcon(onPressed: _openSettings, icon: const Icon(Icons.speed), label: Text(_speedLabel(_speed))),
+                        ]),
+                      ),
+                    ),
+                    // centre group
+                    IconButton.filledTonal(tooltip: 'Previous', iconSize: 30, onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(tooltip: 'Back 10 s', iconSize: 30, onPressed: () => _seekBy(-10), icon: const Icon(Icons.replay_10)),
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      tooltip: _playing ? 'Pause' : 'Play',
+                      iconSize: 44,
+                      focusNode: _playNode,
+                      autofocus: true,
+                      onPressed: _ended ? _replay : _togglePlay,
+                      icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow)),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(tooltip: 'Forward 10 s', iconSize: 30, onPressed: () => _seekBy(10), icon: const Icon(Icons.forward_10)),
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(tooltip: 'Next', iconSize: 30, onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
+                    // right group
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Wrap(spacing: 10, children: [
+                          IconButton.filledTonal(
+                            tooltip: 'Captions',
+                            onPressed: _toggleCaptions,
+                            icon: Icon(_captions ? Icons.closed_caption : Icons.closed_caption_off_outlined),
+                          ),
+                          IconButton.filledTonal(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.settings)),
+                          IconButton.filledTonal(
+                            tooltip: _wide ? 'Close player' : 'Exit full screen',
+                            onPressed: _wide ? () => Navigator.of(context).maybePop() : _toggleFull,
+                            icon: Icon(_wide ? Icons.close : Icons.fullscreen_exit),
+                          ),
+                        ]),
+                      ),
+                    ),
+                  ]),
+                ]),
+              ),
             ]),
           ),
-          if (_errorCode != null) const SizedBox(width: 12),
-        ]),
-      ),
-      if (_errorCode != null)
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 28), child: _errorCard()),
-      const Spacer(),
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(28, 40, 28, 8),
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black]),
+          // Up next: 3 videos per row, Down moves to the next 3.
+          if (order.isNotEmpty)
+            Container(
+              color: Colors.black.withOpacity(0.92),
+              padding: const EdgeInsets.fromLTRB(28, 4, 28, 40),
+              child: Column(children: [
+                for (int r = 0; r < order.length; r += 3)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      for (int j = r; j < r + 3; j++) ...[
+                        if (j > r) const SizedBox(width: 12),
+                        SizedBox(
+                          width: cardW,
+                          child: j < order.length ? _nextCard(order[j], cardW) : const SizedBox.shrink(),
+                        ),
+                      ],
+                    ]),
+                  ),
+              ]),
+            ),
+        ],
+      );
+    });
+  }
+
+  Widget _nextCard(int i, double w) {
+    final q = widget.queue[i];
+    return TvFocusable(
+      onTap: () => _go(i),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: Image.network(
+              q.thumbUrlHq,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26),
+            ),
+          ),
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          _seekBar(),
-          Row(children: [
-            // left group
-            Expanded(
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(spacing: 8, children: [
-                  FilledButton.tonalIcon(onPressed: _openSettings, icon: const Icon(Icons.settings), label: Text(_speedLabel(_speed))),
-                  IconButton.filledTonal(
-                    tooltip: 'Repeat',
-                    onPressed: _cycleRepeat,
-                    icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? null : primary),
-                  ),
-                ]),
-              ),
-            ),
-            // centre group
-            IconButton.filledTonal(tooltip: 'Previous', onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
-            const SizedBox(width: 6),
-            IconButton.filledTonal(tooltip: 'Back 10 s', onPressed: () => _seekBy(-10), icon: const Icon(Icons.replay_10)),
-            const SizedBox(width: 6),
-            IconButton.filled(
-              tooltip: _playing ? 'Pause' : 'Play',
-              iconSize: 36,
-              focusNode: _playNode,
-              autofocus: true,
-              onPressed: _ended ? _replay : _togglePlay,
-              icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow)),
-            ),
-            const SizedBox(width: 6),
-            IconButton.filledTonal(tooltip: 'Forward 10 s', onPressed: () => _seekBy(10), icon: const Icon(Icons.forward_10)),
-            const SizedBox(width: 6),
-            IconButton.filledTonal(tooltip: 'Next', onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
-            // right group
-            Expanded(
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Wrap(spacing: 8, children: [
-                  IconButton.filledTonal(
-                    tooltip: 'Captions',
-                    onPressed: _toggleCaptions,
-                    icon: Icon(_captions ? Icons.closed_caption : Icons.closed_caption_off_outlined),
-                  ),
-                  IconButton.filledTonal(tooltip: 'Exit full screen', onPressed: _toggleFull, icon: const Icon(Icons.fullscreen_exit)),
-                ]),
-              ),
-            ),
-          ]),
-          if (widget.queue.length > 1) ...[
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 128,
-              child: ListView.builder(
-                controller: _strip,
-                scrollDirection: Axis.horizontal,
-                itemCount: widget.queue.length,
-                itemBuilder: (context, i) {
-                  final q = widget.queue[i];
-                  return SizedBox(
-                    width: 196,
-                    child: TvFocusable(
-                      onTap: () => _go(i),
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Stack(children: [
-                            Image.network(
-                              q.thumbUrl,
-                              width: 190,
-                              height: 80,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const SizedBox(width: 190, height: 80),
-                            ),
-                            if (i == _index)
-                              Positioned.fill(
-                                child: ColoredBox(
-                                  color: Colors.black45,
-                                  child: Center(child: Text('NOW PLAYING', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: primary))),
-                                ),
-                              ),
-                          ]),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          q.hasRealTitle ? q.plainTitle : 'YouTube video',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 12, height: 1.2),
-                        ),
-                      ]),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
-        ]),
-      ),
-    ]);
+        const SizedBox(height: 6),
+        Text(
+          q.hasRealTitle ? q.plainTitle : 'YouTube video',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, height: 1.25),
+        ),
+      ]),
+    );
   }
 
   Widget _errorCard() {
@@ -845,14 +929,14 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_full,
+      // TV: Back hides the controls first, then closes the player.
+      // Phone: Back hides the controls, then leaves full screen, then closes.
+      canPop: _wide ? !(_controlsVisible && _playing && !_ended) : !_full,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        // Back: first hides the controls, then leaves full screen.
         if (_controlsVisible && _playing && !_ended) {
-          setState(() => _controlsVisible = false);
-          _root.requestFocus();
-        } else {
+          _hideControls();
+        } else if (!_wide) {
           _toggleFull();
         }
       },
