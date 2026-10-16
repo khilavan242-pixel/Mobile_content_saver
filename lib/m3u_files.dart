@@ -9,6 +9,7 @@ import 'm3u_editor.dart';
 import 'm3u_store.dart';
 import 'player_screen.dart';
 import 'tv_focus.dart';
+import 'voice_search.dart';
 import 'tv_sync.dart';
 import 'youtube_core.dart';
 
@@ -68,7 +69,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   String _type = 'all'; // all | video | playlist
   String _status = 'all'; // all | working | unavailable | kodi_error
   String? _group;
-  String _sort = 'file'; // file | title | chapter
+  String _sort = 'file'; // file | newest | title | chapter
 
   bool _ready = false;
   bool _grid = true;
@@ -846,7 +847,9 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         out.add(Entry(f, it));
       }
     }
-    if (_sort == 'title') {
+    if (_sort == 'newest') {
+      out.setAll(0, out.reversed.toList());
+    } else if (_sort == 'title') {
       out.sort((a, b) => a.item.plainTitle.toLowerCase().compareTo(b.item.plainTitle.toLowerCase()));
     } else if (_sort == 'chapter') {
       out.sort((a, b) {
@@ -885,6 +888,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setS) {
           void both(VoidCallback f) {
@@ -893,9 +897,11 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
           }
 
           Widget label(String t) => Padding(
-                padding: const EdgeInsets.only(top: 14, bottom: 6),
+                padding: const EdgeInsets.only(top: 16, bottom: 6),
                 child: Text(t, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600)),
               );
+
+          bool inView(M3uFile f) => _scope == _Scope.current ? f == _active : (_scope == _Scope.custom && _customPaths.contains(f.path));
 
           return SafeArea(
             child: SingleChildScrollView(
@@ -906,34 +912,24 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Search & filters', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      const Text('Filters', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                       TextButton(
-                        onPressed: () {
-                          both(() {
-                            _type = 'all';
-                            _status = 'all';
-                            _group = null;
-                            _sort = 'file';
-                          });
-                          _setScope(_Scope.current);
+                        onPressed: () async {
+                          _resetFilters();
+                          if (_scope != _Scope.current) await _setScope(_Scope.current);
+                          setS(() {});
                         },
                         child: const Text('Reset', style: TextStyle(color: Colors.redAccent)),
                       ),
                     ],
                   ),
-                  label('SEARCH IN'),
+                  label('FILES'),
                   Wrap(
                     spacing: 8,
+                    runSpacing: 4,
                     children: [
                       ChoiceChip(
-                        label: const Text('This file'),
-                        selected: _scope == _Scope.current,
-                        onSelected: (_) async {
-                          await _setScope(_Scope.current);
-                          setS(() {});
-                        },
-                      ),
-                      ChoiceChip(
+                        avatar: const Icon(Icons.library_books_outlined, size: 16),
                         label: const Text('All files'),
                         selected: _scope == _Scope.all,
                         onSelected: (_) async {
@@ -942,41 +938,45 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                         },
                       ),
                       ChoiceChip(
-                        label: const Text('Choose files'),
+                        avatar: const Icon(Icons.checklist, size: 16),
+                        label: const Text('Pick several'),
                         selected: _scope == _Scope.custom,
                         onSelected: (_) async {
                           await _setScope(_Scope.custom, custom: _customPaths.isEmpty && _active != null ? {_active!.path} : _customPaths);
                           setS(() {});
                         },
                       ),
+                      for (final f in _files)
+                        FilterChip(
+                          avatar: f == _active ? const Icon(Icons.download_done, size: 16) : null,
+                          label: Text('${f.name}.m3u'),
+                          selected: inView(f),
+                          onSelected: (v) async {
+                            if (_scope == _Scope.custom) {
+                              final next = Set<String>.from(_customPaths);
+                              v ? next.add(f.path) : next.remove(f.path);
+                              if (next.isEmpty) return;
+                              await _setScope(_Scope.custom, custom: next);
+                            } else {
+                              await _switchTo(f);
+                            }
+                            setS(() {});
+                          },
+                        ),
+                      ActionChip(
+                        avatar: const Icon(Icons.add, size: 18),
+                        label: const Text('New file'),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _newFile();
+                        },
+                      ),
                     ],
                   ),
-                  if (_scope == _Scope.custom)
-                    Wrap(
-                      spacing: 8,
-                      children: _files
-                          .map((f) => FilterChip(
-                                label: Text('${f.name}.m3u'),
-                                selected: _customPaths.contains(f.path),
-                                onSelected: (v) async {
-                                  final next = Set<String>.from(_customPaths);
-                                  v ? next.add(f.path) : next.remove(f.path);
-                                  if (next.isEmpty) return;
-                                  await _setScope(_Scope.custom, custom: next);
-                                  setS(() {});
-                                },
-                              ))
-                          .toList(),
-                    ),
-                  label('TYPE'),
+                  label('SHOW'),
                   Wrap(spacing: 8, children: [
-                    for (final t in const [('all', 'All'), ('video', 'Videos'), ('playlist', 'Playlists')])
+                    for (final t in const [('all', 'Everything'), ('video', 'Videos'), ('playlist', 'Playlists')])
                       ChoiceChip(label: Text(t.$2), selected: _type == t.$1, onSelected: (_) => both(() => _type = t.$1)),
-                  ]),
-                  label('LINK STATUS'),
-                  Wrap(spacing: 8, children: [
-                    for (final t in const [('all', 'All'), ('working', 'Working'), ('unavailable', 'Unavailable'), ('kodi_error', 'Kodi error')])
-                      ChoiceChip(label: Text(t.$2), selected: _status == t.$1, onSelected: (_) => both(() => _status = t.$1)),
                   ]),
                   if (_groups().isNotEmpty) label('CATEGORY'),
                   if (_groups().isNotEmpty)
@@ -985,15 +985,20 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                       for (final g in _groups())
                         ChoiceChip(label: Text(g), selected: _group == g, onSelected: (_) => both(() => _group = g)),
                     ]),
-                  label('SORT BY'),
+                  label('VIDEO STATUS'),
                   Wrap(spacing: 8, children: [
-                    for (final t in const [('file', 'File order'), ('title', 'Title A–Z'), ('chapter', 'Category & chapter')])
+                    for (final t in [('all', 'Any'), ('working', 'Plays fine'), ('unavailable', 'Unavailable ($_unavailableCount)')])
+                      ChoiceChip(label: Text(t.$2), selected: _status == t.$1, onSelected: (_) => both(() => _status = t.$1)),
+                  ]),
+                  label('SORT BY'),
+                  Wrap(spacing: 8, runSpacing: 4, children: [
+                    for (final t in const [('file', 'Saved order'), ('newest', 'Newest first'), ('title', 'Title A–Z'), ('chapter', 'Category & chapter')])
                       ChoiceChip(label: Text(t.$2), selected: _sort == t.$1, onSelected: (_) => both(() => _sort = t.$1)),
                   ]),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,
-                    height: 48,
+                    height: 52,
                     child: FilledButton(onPressed: () => Navigator.pop(ctx), child: Text('Show ${_visible().length} items')),
                   ),
                 ],
@@ -1200,111 +1205,103 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _fileChips() {
-    final primary = Theme.of(context).colorScheme.primary;
+  /// One compact row under the search box: which file(s) you are looking at,
+  /// plus every active filter as a removable chip. Everything else lives in the
+  /// filter popup (top-right button).
+  Widget _contextRow() {
+    final fileLabel = _scope == _Scope.current
+        ? '${_active?.name ?? ''}.m3u'
+        : (_scope == _Scope.all ? 'All files' : '${_customPaths.length} files');
+    const sortNames = {'newest': 'Newest first', 'title': 'Title A–Z', 'chapter': 'Category & chapter'};
+    Widget pill(Widget c) => Padding(padding: const EdgeInsets.only(right: 8), child: c);
     return SizedBox(
       height: 48,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              avatar: const Icon(Icons.library_books_outlined, size: 16),
-              label: const Text('All files'),
-              selected: _scope == _Scope.all,
-              selectedColor: primary,
-              onSelected: (_) => _setScope(_Scope.all),
-            ),
-          ),
-          ..._files.map((f) {
-            final isActive = f == _active;
-            final inView = _scope == _Scope.current ? isActive : (_scope == _Scope.custom && _customPaths.contains(f.path));
-            return Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                avatar: isActive ? const Icon(Icons.download_done, size: 16) : null,
-                label: Text('${f.name}.m3u'),
-                selected: inView,
-                selectedColor: primary,
-                onSelected: (_) => _switchTo(f),
-              ),
-            );
-          }),
-          ActionChip(avatar: const Icon(Icons.add, size: 18), label: const Text('New file'), onPressed: _newFile),
+          pill(ActionChip(
+            avatar: const Icon(Icons.folder_open, size: 16),
+            label: Text(fileLabel),
+            onPressed: _showFilterSheet,
+          )),
+          if (_type != 'all')
+            pill(InputChip(
+              label: Text(_type == 'video' ? 'Videos' : 'Playlists'),
+              onPressed: _showFilterSheet,
+              onDeleted: () => setState(() => _type = 'all'),
+            )),
+          if (_group != null)
+            pill(InputChip(label: Text(_group!), onPressed: _showFilterSheet, onDeleted: () => setState(() => _group = null))),
+          if (_status != 'all')
+            pill(InputChip(
+              label: Text(_status == 'unavailable' ? 'Unavailable' : 'Plays fine'),
+              onPressed: _showFilterSheet,
+              onDeleted: () => setState(() => _status = 'all'),
+            )),
+          if (_sort != 'file')
+            pill(InputChip(label: Text(sortNames[_sort] ?? _sort), onPressed: _showFilterSheet, onDeleted: () => setState(() => _sort = 'file'))),
         ],
       ),
     );
   }
 
-  Widget _filterChips() {
-    final primary = Theme.of(context).colorScheme.primary;
-    final allOn = _type == 'all' && _status == 'all' && _group == null;
-    final unavailable = _unavailableCount;
-    return SizedBox(
-      height: 44,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: const Text('All'),
-              selected: allOn,
-              selectedColor: primary,
-              onSelected: (_) => setState(() {
-                _type = 'all';
-                _status = 'all';
-                _group = null;
-              }),
-            ),
-          ),
-          ..._groups().map((g) => Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: Text(g),
-                  selected: _group == g,
-                  selectedColor: primary,
-                  onSelected: (v) => setState(() => _group = v ? g : null),
-                ),
-              )),
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: const Text('Videos'),
-              selected: _type == 'video',
-              selectedColor: primary,
-              onSelected: (v) => setState(() => _type = v ? 'video' : 'all'),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: const Text('Playlists'),
-              selected: _type == 'playlist',
-              selectedColor: primary,
-              onSelected: (v) => setState(() => _type = v ? 'playlist' : 'all'),
-            ),
-          ),
-          if (unavailable > 0)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                avatar: const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orangeAccent),
-                label: Text('Unavailable ($unavailable)'),
-                selected: _status == 'unavailable',
-                selectedColor: Colors.redAccent,
-                onSelected: (v) => setState(() => _status = v ? 'unavailable' : 'all'),
-              ),
-            ),
-        ],
-      ),
+  bool get _isTv {
+    final size = MediaQuery.of(context).size;
+    return size.width >= 900 && size.width > size.height;
+  }
+
+  Future<void> _openSearch({bool listen = false}) async {
+    final r = await showSearchDialog(
+      context,
+      initial: _query,
+      hint: _scope == _Scope.current ? 'Search in ${_active?.name ?? ''}.m3u' : 'Search ${_scopeFiles.length} files',
+      startListening: listen,
     );
+    if (r == null || !mounted) return;
+    _searchCtrl.text = r;
+    setState(() => _query = r);
   }
 
   Widget _searchField() {
+    final hint = _scope == _Scope.current ? 'Search in ${_active?.name ?? ''}.m3u' : 'Search ${_scopeFiles.length} files';
+    if (_isTv) {
+      // TV: a focusable box that opens the search dialog (keyboard or voice).
+      return Focus(
+        onKeyEvent: (n, e) {
+          if (e is KeyDownEvent && (e.logicalKey == LogicalKeyboardKey.browserSearch || e.logicalKey == LogicalKeyboardKey.launchAssistant)) {
+            _openSearch(listen: true);
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: TvFocusable(
+          radius: 24,
+          onTap: _openSearch,
+          child: Container(
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface, borderRadius: BorderRadius.circular(24)),
+            child: Row(children: [
+              const Icon(Icons.search),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(_query.isEmpty ? hint : _query, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: _query.isEmpty ? Colors.grey : null)),
+              ),
+              if (_query.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    setState(() => _query = '');
+                  },
+                ),
+              IconButton(tooltip: 'Voice search', icon: const Icon(Icons.mic), onPressed: () => _openSearch(listen: true)),
+            ]),
+          ),
+        ),
+      );
+    }
     return SizedBox(
       height: 44,
       child: TextField(
@@ -1315,7 +1312,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
           hintText: _scope == _Scope.current ? 'Search in ${_active?.name ?? ''}.m3u' : 'Search ${_scopeFiles.length} files',
           prefixIcon: const Icon(Icons.search),
           suffixIcon: _query.isEmpty
-              ? null
+              ? IconButton(tooltip: 'Voice search', icon: const Icon(Icons.mic_none), onPressed: () => _openSearch(listen: true))
               : IconButton(
                   icon: const Icon(Icons.close),
                   onPressed: () {
@@ -1397,8 +1394,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         ),
       ],
       bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(92),
-        child: Column(children: [_fileChips(), _filterChips()]),
+        preferredSize: const Size.fromHeight(48),
+        child: _contextRow(),
       ),
     );
   }
@@ -1546,7 +1543,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     final selecting = _selected.isNotEmpty;
     final width = MediaQuery.of(context).size.width;
     const pad = 12.0, gap = 12.0;
-    final cellW = (width - pad * 2 - gap) / 2;
+    final cols = width >= 900 ? 3 : 2;
+    final cellW = (width - pad * 2 - gap * (cols - 1)) / cols;
 
     Widget content;
     if (visible.isEmpty) {
@@ -1556,7 +1554,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         padding: const EdgeInsets.fromLTRB(pad, 4, pad, 96),
         sliver: SliverGrid(
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
+            crossAxisCount: cols,
             crossAxisSpacing: gap,
             mainAxisSpacing: 14,
             mainAxisExtent: cellW * 9 / 16 + (_scope == _Scope.current ? 66 : 84),

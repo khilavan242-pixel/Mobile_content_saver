@@ -8,6 +8,8 @@ class TvFocusable extends StatefulWidget {
   final VoidCallback? onLongPress;
   final double radius;
   final bool autofocus;
+  final FocusNode? focusNode;
+  final ValueChanged<bool>? onFocus;
   const TvFocusable({
     Key? key,
     required this.child,
@@ -15,6 +17,8 @@ class TvFocusable extends StatefulWidget {
     this.onLongPress,
     this.radius = 12,
     this.autofocus = false,
+    this.focusNode,
+    this.onFocus,
   }) : super(key: key);
 
   @override
@@ -38,9 +42,13 @@ class _TvFocusableState extends State<TvFocusable> {
       child: InkWell(
         borderRadius: r,
         autofocus: widget.autofocus,
+        focusNode: widget.focusNode,
         onTap: widget.onTap,
         onLongPress: widget.onLongPress,
-        onFocusChange: (v) => setState(() => _focused = v),
+        onFocusChange: (v) {
+          setState(() => _focused = v);
+          widget.onFocus?.call(v);
+        },
         child: widget.child,
       ),
     );
