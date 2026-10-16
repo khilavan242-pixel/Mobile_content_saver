@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'm3u_editor.dart';
 import 'm3u_store.dart';
 import 'player_screen.dart';
+import 'tv_focus.dart';
 import 'tv_sync.dart';
 import 'youtube_core.dart';
 
@@ -1151,8 +1152,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   Widget _card(Entry e, {required bool compact}) {
     final item = e.item;
     final showFile = _scope != _Scope.current;
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
+    return TvFocusable(
       onTap: () => _tap(e),
       onLongPress: () => setState(() => _selected.add(e.id)),
       child: Column(
@@ -1191,7 +1191,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                     ],
                   ),
                 ),
-                SizedBox(width: 32, height: 32, child: _itemMenu(e)),
+                SizedBox(width: 44, height: 44, child: _itemMenu(e)),
               ],
             ),
           ),

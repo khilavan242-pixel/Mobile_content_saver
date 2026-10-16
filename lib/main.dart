@@ -14,6 +14,12 @@ const Color kAccent = Color(0xFF8B5CF6); // violet, matches the app icon
 const Color kBg = Color(0xFF0F0B1E);
 const Color kSurface = Color(0xFF1B1633);
 
+ButtonStyle _focusRing() => ButtonStyle(
+      side: WidgetStateProperty.resolveWith((states) =>
+          states.contains(WidgetState.focused) ? const BorderSide(color: Colors.white, width: 3) : null),
+      minimumSize: const WidgetStatePropertyAll(Size(48, 48)),
+    );
+
 ThemeData _buildTheme() {
   final scheme = ColorScheme.fromSeed(
     seedColor: const Color(0xFF7C3AED),
@@ -47,6 +53,19 @@ ThemeData _buildTheme() {
     ),
     chipTheme: ChipThemeData(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      side: WidgetStateBorderSide.resolveWith((states) =>
+          states.contains(WidgetState.focused) ? const BorderSide(color: Colors.white, width: 3) : BorderSide.none),
+    ),
+    // Remote-control friendly: every focused control gets a thick white ring.
+    focusColor: Colors.white24,
+    filledButtonTheme: FilledButtonThemeData(style: _focusRing()),
+    outlinedButtonTheme: OutlinedButtonThemeData(style: _focusRing()),
+    textButtonTheme: TextButtonThemeData(style: _focusRing()),
+    iconButtonTheme: IconButtonThemeData(style: _focusRing()),
+    floatingActionButtonTheme: const FloatingActionButtonThemeData(
+      focusColor: Colors.white30,
+      focusElevation: 12,
+      extendedPadding: EdgeInsets.symmetric(horizontal: 22),
     ),
   );
 }
