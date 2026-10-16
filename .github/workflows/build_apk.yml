@@ -51,11 +51,14 @@ jobs:
 
       # 7. Build Release APK
       - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons
+        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
 
-      # 8. Upload Built APK
-      - name: Upload Release APK
+      # 8. Upload the split APKs:
+      #    app-arm64-v8a-release.apk    -> modern phones
+      #    app-armeabi-v7a-release.apk  -> Android TV / older 32-bit devices
+      #    app-x86_64-release.apk       -> emulators
+      - name: Upload Release APKs
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*-release.apk
