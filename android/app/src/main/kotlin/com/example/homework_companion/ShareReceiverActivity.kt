@@ -73,32 +73,34 @@ class ShareReceiverActivity : Activity() {
         }
         val title = rawTitle.replace(Regex("[\\r\\n\\t]+"), " ").trim()
 
+        return synchronized(LOCK) { appendEntry(filesDir, kind, id, title) }
+    }
+
+    private fun appendEntry(filesDir: File, kind: String, id: String, title: String): String {
         val config = File(filesDir, "share_config.txt")
-        synchronized(LOCK) {
-            if (!config.exists()) {
-                // The app has never been opened / no list chosen yet: park it.
-                File(filesDir, "pending_shares.txt").appendText("$kind\t$id\t$title\n")
-                return "Saved. Open Kodi TV Manager once to finish setup."
-            }
-            val lines = config.readLines()
-            val listFile = File(lines[0])
-            val listName = lines.getOrElse(1) { "YouTube List" }.replace("\"", "")
-
-            listFile.parentFile?.mkdirs()
-            if (!listFile.exists()) listFile.writeText("#EXTM3U\n")
-
-            val key = if (kind == "video") "video_id=$id" else "playlist_id=$id"
-            if (listFile.readText().contains(key)) {
-                return "Already in \"$listName\""
-            }
-
-            val logo = if (kind == "video") "https://img.youtube.com/vi/$id/hqdefault.jpg" else ""
-            val kodiUrl = if (kind == "video") "plugin://plugin.video.youtube/play/?video_id=$id"
-            else "plugin://plugin.video.youtube/play/?playlist_id=$id&order=default&play=1"
-
-            listFile.appendText("\n#EXTINF:-1 group-title=\"$listName\" tvg-logo=\"$logo\", $title\n$kodiUrl\n")
-            return "Saved to \"$listName\""
+        if (!config.exists()) {
+            // The app has never been opened / no file chosen yet: park it.
+            File(filesDir, "pending_shares.txt").appendText("$kind\t$id\t$title\n")
+            return "Saved. Open TubeBox once to finish setup."
         }
+        val lines = config.readLines()
+        val listFile = File(lines[0])
+        val listName = lines.getOrElse(1) { "YouTube List" }.replace("\"", "")
+
+        listFile.parentFile?.mkdirs()
+        if (!listFile.exists()) listFile.writeText("#EXTM3U\n")
+
+        val key = if (kind == "video") "video_id=$id" else "playlist_id=$id"
+        if (listFile.readText().contains(key)) {
+            return "Already in \"$listName\""
+        }
+
+        val logo = if (kind == "video") "https://img.youtube.com/vi/$id/hqdefault.jpg" else ""
+        val kodiUrl = if (kind == "video") "plugin://plugin.video.youtube/play/?video_id=$id"
+        else "plugin://plugin.video.youtube/play/?playlist_id=$id&order=default&play=1"
+
+        listFile.appendText("\n#EXTINF:-1 group-title=\"$listName\" play-status=\"working\" tvg-logo=\"$logo\", $title\n$kodiUrl\n")
+        return "Saved to \"$listName\""
     }
 
     private fun fetchTitle(webUrl: String): String? {
