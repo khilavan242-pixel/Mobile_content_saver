@@ -18,10 +18,15 @@ class PlayerScreen extends StatefulWidget {
   _PlayerScreenState createState() => _PlayerScreenState();
 }
 
+/// YouTube asks apps to identify themselves with a Referer made from the app id.
+const String kAppReferer = 'https://com.example.homework_companion';
+
 class _PlayerScreenState extends State<PlayerScreen> {
+  int _mode = 0; // 0 = player API, 1 = player API via nocookie host, 2 = plain embed page
   late final WebViewController _web;
   late int _index;
   bool _ready = false;
+  bool _loadingRequest = false;
   bool _full = false;
   int? _errorCode;
   int _played = 0;
@@ -38,14 +43,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ..addJavaScriptChannel('Tube', onMessageReceived: (m) => _onMessage(m.message))
       ..setNavigationDelegate(NavigationDelegate(
         // Nothing may navigate the page away (no jumping to YouTube).
-        onNavigationRequest: (r) => NavigationDecision.prevent,
+        onNavigationRequest: (r) => (_loadingRequest || r.url.startsWith('about:')) ? NavigationDecision.navigate : NavigationDecision.prevent,
+        onPageFinished: (_) {
+          if (_mode == 2 && mounted) setState(() => _ready = true);
+        },
       ));
     final platform = _web.platform;
     if (platform is AndroidWebViewController) {
       platform.setMediaPlaybackRequiresUserGesture(false);
     }
-    _web.loadHtmlString(_html(_current), baseUrl: 'https://www.youtube.com');
+    _load();
   }
+
+  Future<void> _load() async {
+    setState(() {
+      _ready = false;
+      _errorCode = null;
+    });
+    final it = _current;
+    if (_mode == 2) {
+      _loadingRequest = true;
+      final path = it.isPlaylist ? 'videoseries?list=${it.id}' : '${it.id}?';
+      final sep = it.isPlaylist ? '&' : '';
+      final url = 'https://www.youtube-nocookie.com/embed/$path${sep}autoplay=1&playsinline=1&rel=0&fs=0&modestbranding=1&origin=${Uri.encodeComponent(kAppReferer)}&widget_referrer=${Uri.encodeComponent(kAppReferer)}';
+      await _web.loadRequest(Uri.parse(url), headers: {'Referer': kAppReferer});
+      _loadingRequest = false;
+    } else {
+      await _web.loadHtmlString(_html(it), baseUrl: kAppReferer);
+    }
+  }
+
+  void _nextMode() {
+    setState(() => _mode = (_mode + 1) % 3);
+    _load();
+  }
+
+  String get _modeName => const ['Player A', 'Player B', 'Player C'][_mode];
 
   @override
   void dispose() {
@@ -53,6 +86,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
+
+  String get _host => _mode == 1 ? 'https://www.youtube-nocookie.com' : 'https://www.youtube.com';
 
   String _html(YtItem first) {
     final vars = first.isPlaylist
@@ -70,8 +105,8 @@ var player;
 function post(m){ try{ Tube.postMessage(m); }catch(e){} }
 function onYouTubeIframeAPIReady(){
   player = new YT.Player('p',{
-    width:'100%', height:'100%', $vid
-    playerVars:{ $vars autoplay:1, playsinline:1, rel:0, fs:0, modestbranding:1, iv_load_policy:3, origin:'https://www.youtube.com' },
+    width:'100%', height:'100%', host:'$_host', $vid
+    playerVars:{ $vars autoplay:1, playsinline:1, rel:0, fs:0, modestbranding:1, iv_load_policy:3, origin:'$kAppReferer' },
     events:{
       onReady:function(){ post('ready'); },
       onStateChange:function(e){ post('state:'+e.data); },
@@ -113,6 +148,10 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       _errorCode = null;
     });
     final it = widget.queue[i];
+    if (_mode == 2) {
+      _load();
+      return;
+    }
     _web.runJavaScript(it.isPlaylist ? "loadPlaylist('${it.id}')" : "loadVideo('${it.id}')");
   }
 
@@ -139,9 +178,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
 
   String _errorText(int code) {
     switch (code) {
+      case 152:
+      case 153:
+        return 'YouTube refused this player setup (error $code, $_modeName). Tap "Try another player" below.';
       case 101:
       case 150:
-      case 153:
         return 'The owner of this video does not allow playing it outside YouTube.';
       case 100:
         return 'This video was removed or is private.';
@@ -173,7 +214,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             ? null
             : AppBar(
                 title: Text(
-                  widget.queue.length > 1 ? 'Playing ${_index + 1} of ${widget.queue.length}' : 'TubeBox player',
+                  (widget.queue.length > 1 ? 'Playing ${_index + 1} of ${widget.queue.length}' : 'TubeBox player') + ' · $_modeName',
                   style: const TextStyle(fontSize: 16),
                 ),
               ),
@@ -261,6 +302,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           const SizedBox(height: 8),
           Wrap(spacing: 8, children: [
             if (hasNext) FilledButton(onPressed: () => _go(_index + 1), child: const Text('Skip to next')),
+            FilledButton.tonal(onPressed: _nextMode, child: const Text('Try another player')),
             OutlinedButton(onPressed: _openInYouTube, child: const Text('Open in YouTube')),
           ]),
         ]),
