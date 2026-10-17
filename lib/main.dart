@@ -151,9 +151,28 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
     return false;
   }
 
+  String _step = 'Starting...';
+  String? _fatal;
+
   Future<void> _init({bool ask = false}) async {
+    try {
+      await _initInner(ask).timeout(const Duration(seconds: 30));
+    } catch (e) {
+      // Never stay on the spinner: show what went wrong and offer a way in.
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _fatal = '$e (step: $_step)';
+        });
+      }
+    }
+  }
+
+  Future<void> _initInner(bool ask) async {
+    if (mounted) setState(() => _step = 'Checking file access...');
     final ok = await _hasStorageAccess(ask: ask);
-    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _step = 'Reading settings...');
+    final prefs = await SharedPreferences.getInstance().timeout(const Duration(seconds: 10));
     String? saved = prefs.getString('saved_base_path');
     if (ok && saved == null) {
       // First start: use a sensible default so nobody has to pick a folder.
@@ -170,6 +189,7 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
     final appOwned = saved != null && saved.contains('/Android/data/');
     if (!mounted) return;
     setState(() {
+      _fatal = null;
       _permissionOk = ok || appOwned;
       _basePath = (ok || appOwned) ? saved : null;
       _loading = false;
@@ -232,7 +252,32 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        body: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(_step, style: const TextStyle(color: Colors.white54)),
+          ]),
+        ),
+      );
+    }
+    if (_fatal != null && _basePath == null) {
+      return _centered([
+        Text('TubeBox could not start:\n$_fatal', textAlign: TextAlign.center),
+        const SizedBox(height: 16),
+        FilledButton(
+          onPressed: () {
+            setState(() {
+              _fatal = null;
+              _loading = true;
+            });
+            _init();
+          },
+          child: const Text('Try again'),
+        ),
+        TextButton(onPressed: _useAppFolder, child: const Text("Use the app's own folder")),
+      ]);
     }
 
     if (_basePath == null && !_permissionOk) {
