@@ -1,6 +1,7 @@
 package com.example.homework_companion
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
@@ -12,6 +13,7 @@ import io.flutter.plugin.common.MethodChannel
 /// the video keeps playing in a little window that can be dragged anywhere.
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
+    private var mediaChannel: MethodChannel? = null
     private var autoPip = false
     private var wide = true
 
@@ -28,6 +30,40 @@ class MainActivity : FlutterActivity() {
                 "auto" -> {
                     autoPip = call.argument<Boolean>("on") ?: false
                     wide = call.argument<Boolean>("wide") ?: true
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Background playback: media notification + service.
+        val mc = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "tubebox/media")
+        mediaChannel = mc
+        PlaybackService.onCommand = { cmd -> runOnUiThread { mc.invokeMethod("cmd", cmd) } }
+        mc.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "show" -> {
+                    val t = call.argument<String>("title") ?: "TubeBox"
+                    val sub = call.argument<String>("subtitle") ?: ""
+                    val playing = call.argument<Boolean>("playing") ?: true
+                    val prev = call.argument<Boolean>("prev") ?: false
+                    val next = call.argument<Boolean>("next") ?: false
+                    val svc = PlaybackService.instance
+                    if (svc != null) {
+                        svc.update(t, sub, playing, prev, next)
+                    } else {
+                        val i = Intent(this, PlaybackService::class.java)
+                            .putExtra("title", t).putExtra("subtitle", sub)
+                            .putExtra("playing", playing).putExtra("prev", prev).putExtra("next", next)
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+                        } catch (e: Exception) {
+                        }
+                    }
+                    result.success(true)
+                }
+                "stop" -> {
+                    stopService(Intent(this, PlaybackService::class.java))
                     result.success(true)
                 }
                 else -> result.notImplemented()
