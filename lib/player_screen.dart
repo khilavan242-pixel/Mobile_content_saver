@@ -318,7 +318,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   /// Pressing Home while a video plays turns it into the floating mini player.
   void _syncPipAuto() {
-    Pip.auto(_playing && !_wide && !_audio && _errorCode == null, wide: !_shortUi);
+    Pip.auto(_playing && !_wide && _errorCode == null, wide: !_shortUi);
     // Media notification: lock screen / headset / notification buttons.
     Media.show(
       title: _current.hasRealTitle ? _current.plainTitle : 'YouTube video',
@@ -1541,6 +1541,35 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     );
   }
 
+  /// Round colourful action button with a small caption (phone panel).
+  Widget _actionTile(IconData icon, Color color, String label, VoidCallback onTap, {bool on = true}) {
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: on
+                    ? LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [color, color.withOpacity(0.6)])
+                    : const LinearGradient(colors: [Color(0xFF3A3A3A), Color(0xFF2A2A2A)]),
+                boxShadow: on ? [BoxShadow(color: color.withOpacity(0.35), blurRadius: 10)] : null,
+              ),
+              child: Icon(icon, color: on ? Colors.white : Colors.white54, size: 26),
+            ),
+            const SizedBox(height: 6),
+            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(fontSize: 11.5, color: Colors.white70)),
+          ]),
+        ),
+      ),
+    );
+  }
+
   Widget _panel({required bool wide}) {
     final it = _current;
     return ListView(
@@ -1563,16 +1592,12 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         ),
         const SizedBox(height: 10),
         if (_errorCode != null) ...[_errorCard(), const SizedBox(height: 10)],
-        SwitchListTile(
-          dense: true,
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Play next automatically'),
-          value: _autoNext,
-          onChanged: (v) => setState(() => _autoNext = v),
-        ),
-        OutlinedButton.icon(onPressed: _openInYouTube, icon: const Icon(Icons.open_in_new), label: const Text('Open in YouTube app')),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(onPressed: () => _setAudio(true), icon: const Icon(Icons.headphones), label: const Text('Audio mode (MP3 player)')),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _actionTile(Icons.smart_display, const Color(0xFFE53935), 'YouTube', _openInYouTube),
+          _actionTile(Icons.headphones, const Color(0xFFFF8F00), 'Audio', () => _setAudio(true)),
+          _actionTile(Icons.picture_in_picture_alt, const Color(0xFF1E88E5), 'Float', _enterPip),
+          _actionTile(Icons.playlist_play, const Color(0xFF43A047), _autoNext ? 'Autoplay' : 'Autoplay off', () => setState(() => _autoNext = !_autoNext), on: _autoNext),
+        ]),
         if (widget.queue.length > 1) ...[
           const SizedBox(height: 18),
           const Text('Up next', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),

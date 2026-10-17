@@ -1221,22 +1221,32 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   /// plus every active filter as a removable chip. Everything else lives in the
   /// filter popup (top-right button).
   Widget _contextRow() {
-    final fileLabel = _scope == _Scope.current
-        ? '${_active?.name ?? ''}.m3u'
-        : (_scope == _Scope.all ? 'All files' : '${_customPaths.length} files');
     const sortNames = {'newest': 'Newest first', 'title': 'Title A–Z', 'chapter': 'Category & chapter'};
     Widget pill(Widget c) => Padding(padding: const EdgeInsets.only(right: 8), child: c);
+    // YouTube-style chip: the chosen one is white with dark text.
+    Widget yt(String label, bool sel, VoidCallback tap) => pill(ChoiceChip(
+          label: Text(label),
+          selected: sel,
+          showCheckmark: false,
+          onSelected: (_) => tap(),
+          selectedColor: Colors.white,
+          backgroundColor: const Color(0xFF2A2545),
+          labelStyle: TextStyle(color: sel ? Colors.black : Colors.white, fontWeight: FontWeight.w600),
+        ));
     return SizedBox(
       height: 48,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         children: [
-          pill(ActionChip(
-            avatar: const Icon(Icons.folder_open, size: 16),
-            label: Text(fileLabel),
-            onPressed: _showFilterSheet,
-          )),
+          if (_scope == _Scope.custom) yt('${_customPaths.length} files', true, _showFilterSheet),
+          yt('All', _scope == _Scope.all, () {
+            if (_scope != _Scope.all) _setScope(_Scope.all);
+          }),
+          for (final f in _files)
+            yt(f.name, _scope == _Scope.current && _active?.path == f.path, () {
+              if (!(_scope == _Scope.current && _active?.path == f.path)) _switchTo(f);
+            }),
           if (_type != 'all')
             pill(InputChip(
               label: Text(_type == 'video' ? 'Videos' : 'Playlists'),
