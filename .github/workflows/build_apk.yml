@@ -38,6 +38,7 @@ jobs:
           cp android/app/src/main/AndroidManifest.xml /tmp/android_custom/AndroidManifest.xml
           cp android/app/src/main/kotlin/com/example/homework_companion/ShareReceiverActivity.kt /tmp/android_custom/ShareReceiverActivity.kt
           cp android/app/src/main/kotlin/com/example/homework_companion/MainActivity.kt /tmp/android_custom/MainActivity.kt
+          cp android/app/src/main/kotlin/com/example/homework_companion/PlaybackService.kt /tmp/android_custom/PlaybackService.kt
           mkdir -p /tmp/android_custom/res
           cp -r android/app/src/main/res/mipmap-* /tmp/android_custom/res/
           rm -rf android
@@ -45,6 +46,7 @@ jobs:
           cp /tmp/android_custom/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           cp /tmp/android_custom/ShareReceiverActivity.kt android/app/src/main/kotlin/com/example/homework_companion/ShareReceiverActivity.kt
           cp /tmp/android_custom/MainActivity.kt android/app/src/main/kotlin/com/example/homework_companion/MainActivity.kt
+          cp /tmp/android_custom/PlaybackService.kt android/app/src/main/kotlin/com/example/homework_companion/PlaybackService.kt
           cp -r /tmp/android_custom/res/. android/app/src/main/res/
 
       # 6. Fetch Dependencies
