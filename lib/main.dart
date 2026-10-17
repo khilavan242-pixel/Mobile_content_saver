@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -268,6 +269,10 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   final ValueNotifier<bool> _navVisible = ValueNotifier<bool>(true);
+  final ValueNotifier<int> _searchRequest = ValueNotifier<int>(0);
+  // TV side menu buttons: 0 search, 1 home, 2 TV sync, 3 folder.
+  final List<FocusNode> _railNodes = List.generate(4, (i) => FocusNode(debugLabel: 'rail-$i'));
+  bool _asking = false;
 
   @override
   void initState() {
@@ -278,6 +283,10 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void dispose() {
     _navVisible.dispose();
+    _searchRequest.dispose();
+    for (final n in _railNodes) {
+      n.dispose();
+    }
     super.dispose();
   }
 
@@ -296,20 +305,104 @@ class _HomeShellState extends State<HomeShell> {
     setState(() => _index = i);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: [
-          M3uFilesScreen(
-            basePath: widget.basePath,
-            navVisible: _navVisible,
-            onGoToTvSync: () => _go(1),
-          ),
-          TvSyncScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
+  /// Back: other tab -> first tab, first tab -> "Exit TubeBox?" question.
+  Future<void> _onBack() async {
+    if (_index != 0) {
+      _go(0);
+      return;
+    }
+    if (_asking) return;
+    _asking = true;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Exit TubeBox?'),
+        content: const Text('Do you want to close the app?'),
+        actions: [
+          TextButton(autofocus: true, onPressed: () => Navigator.of(c).pop(false), child: const Text('Stay')),
+          FilledButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('Exit')),
         ],
       ),
+    );
+    _asking = false;
+    if (yes == true) SystemNavigator.pop();
+  }
+
+  Widget _pages(bool tv) {
+    final pages = [
+      M3uFilesScreen(
+        basePath: widget.basePath,
+        navVisible: _navVisible,
+        onGoToTvSync: () => _go(1),
+        searchRequest: _searchRequest,
+        railInset: tv ? _kRailWidth : 0,
+      ),
+      TvSyncScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
+    ];
+    return IndexedStack(
+      index: _index,
+      children: [for (int i = 0; i < pages.length; i++) ExcludeFocus(excluding: i != _index, child: pages[i])],
+    );
+  }
+
+  /// TV: Left from the first column of the content opens the side menu and
+  /// lands on the current page's button (like the YouTube TV app).
+  KeyEventResult _contentKey(FocusNode node, KeyEvent e) {
+    if (e is! KeyDownEvent || e.logicalKey != LogicalKeyboardKey.arrowLeft) return KeyEventResult.ignored;
+    final pf = FocusManager.instance.primaryFocus;
+    if (pf == null) return KeyEventResult.ignored;
+    // Let text fields keep their cursor keys.
+    if (pf.context?.findAncestorWidgetOfExactType<EditableText>() != null) return KeyEventResult.ignored;
+    final moved = pf.focusInDirection(TraversalDirection.left);
+    if (moved && _railNodes.any((n) => n.hasPrimaryFocus)) {
+      _railNodes[_index + 1].requestFocus();
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final tv = size.width >= 900 && size.width > size.height;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _onBack();
+      },
+      child: tv ? _tvLayout() : _phoneLayout(),
+    );
+  }
+
+  Widget _tvLayout() {
+    return Scaffold(
+      body: Stack(children: [
+        Positioned.fill(
+          left: _kRailWidth,
+          child: Focus(canRequestFocus: false, skipTraversal: true, onKeyEvent: _contentKey, child: _pages(true)),
+        ),
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          child: _TvRail(
+            selected: _index,
+            nodes: _railNodes,
+            onSearch: () {
+              _go(0);
+              _searchRequest.value++;
+            },
+            onHome: () => _go(0),
+            onSync: () => _go(1),
+            onFolder: widget.onChangeFolder,
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _phoneLayout() {
+    return Scaffold(
+      body: _pages(false),
       bottomNavigationBar: ValueListenableBuilder<bool>(
         valueListenable: _navVisible,
         builder: (context, visible, _) => AnimatedSize(
@@ -326,6 +419,124 @@ class _HomeShellState extends State<HomeShell> {
                   ],
                 )
               : const SizedBox(width: double.infinity),
+        ),
+      ),
+    );
+  }
+}
+
+const double _kRailWidth = 76;
+
+// ============================================================================
+// TV SIDE MENU (like the YouTube TV app): a slim icon strip on the left. When
+// the remote focuses it, it opens with names; Right / Back returns to content.
+// ============================================================================
+class _TvRail extends StatefulWidget {
+  final int selected;
+  final List<FocusNode> nodes;
+  final VoidCallback onSearch, onHome, onSync, onFolder;
+  const _TvRail({
+    Key? key,
+    required this.selected,
+    required this.nodes,
+    required this.onSearch,
+    required this.onHome,
+    required this.onSync,
+    required this.onFolder,
+  }) : super(key: key);
+
+  @override
+  State<_TvRail> createState() => _TvRailState();
+}
+
+class _TvRailState extends State<_TvRail> {
+  bool _open = false;
+
+  Widget _item(int n, IconData icon, IconData activeIcon, String label, VoidCallback onTap, {bool selected = false}) {
+    return _RailButton(node: widget.nodes[n], icon: selected ? activeIcon : icon, label: label, open: _open, selected: selected, onTap: onTap);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (f) {
+        if (f != _open) setState(() => _open = f);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        width: _open ? 270 : _kRailWidth,
+        decoration: BoxDecoration(
+          gradient: _open
+              ? const LinearGradient(colors: [Color(0xF2080614), Color(0xE6080614), Color(0x00080614)], stops: [0, 0.8, 1])
+              : null,
+          color: _open ? null : kBg.withOpacity(0.0),
+        ),
+        padding: const EdgeInsets.fromLTRB(10, 18, 10, 18),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 8, bottom: 14),
+            child: Row(children: [
+              ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.asset('assets/logo.png', width: 40, height: 40)),
+              if (_open) const Flexible(child: Padding(padding: EdgeInsets.only(left: 12), child: Text('TubeBox', maxLines: 1, softWrap: false, overflow: TextOverflow.clip, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)))),
+            ]),
+          ),
+          _item(0, Icons.search, Icons.search, 'Search', widget.onSearch),
+          _item(1, Icons.home_outlined, Icons.home, 'Home', widget.onHome, selected: widget.selected == 0),
+          _item(2, Icons.cast_connected_outlined, Icons.cast_connected, 'TV Sync', widget.onSync, selected: widget.selected == 1),
+          const Spacer(),
+          _item(3, Icons.folder_open_outlined, Icons.folder_open, 'Change folder', widget.onFolder),
+        ]),
+      ),
+    );
+  }
+}
+
+class _RailButton extends StatefulWidget {
+  final FocusNode node;
+  final IconData icon;
+  final String label;
+  final bool open, selected;
+  final VoidCallback onTap;
+  const _RailButton({Key? key, required this.node, required this.icon, required this.label, required this.open, required this.selected, required this.onTap}) : super(key: key);
+
+  @override
+  State<_RailButton> createState() => _RailButtonState();
+}
+
+class _RailButtonState extends State<_RailButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = _focused ? Colors.black : (widget.selected ? kAccent : Colors.white);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Material(
+        color: _focused ? Colors.white : (widget.selected && widget.open ? Colors.white12 : Colors.transparent),
+        borderRadius: BorderRadius.circular(28),
+        child: InkWell(
+          focusNode: widget.node,
+          borderRadius: BorderRadius.circular(28),
+          focusColor: Colors.transparent,
+          onFocusChange: (f) => setState(() => _focused = f),
+          onTap: widget.onTap,
+          child: SizedBox(
+            height: 52,
+            child: Row(children: [
+              const SizedBox(width: 14),
+              Icon(widget.icon, color: fg, size: 26),
+              if (widget.open)
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 14, right: 10),
+                    child: Text(widget.label, maxLines: 1, softWrap: false, overflow: TextOverflow.clip, style: TextStyle(color: fg, fontSize: 17, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+            ]),
+          ),
         ),
       ),
     );

@@ -43,11 +43,17 @@ class M3uFilesScreen extends StatefulWidget {
   final String basePath;
   final ValueNotifier<bool> navVisible;
   final VoidCallback onGoToTvSync;
+  /// TV: the side menu asks for the search box through this.
+  final ValueNotifier<int>? searchRequest;
+  /// TV: width taken by the collapsed side menu on the left.
+  final double railInset;
   const M3uFilesScreen({
     Key? key,
     required this.basePath,
     required this.navVisible,
     required this.onGoToTvSync,
+    this.searchRequest,
+    this.railInset = 0,
   }) : super(key: key);
 
   @override
@@ -84,11 +90,17 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     super.initState();
     _store = YtStore(widget.basePath);
     WidgetsBinding.instance.addObserver(this);
+    widget.searchRequest?.addListener(_onSearchRequest);
     _init();
+  }
+
+  void _onSearchRequest() {
+    if (mounted && _ready) _openSearch();
   }
 
   @override
   void dispose() {
+    widget.searchRequest?.removeListener(_onSearchRequest);
     WidgetsBinding.instance.removeObserver(this);
     _searchCtrl.dispose();
     super.dispose();
@@ -1541,9 +1553,10 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   Widget build(BuildContext context) {
     final visible = _ready ? _visible() : <Entry>[];
     final selecting = _selected.isNotEmpty;
-    final width = MediaQuery.of(context).size.width;
+    final fullWidth = MediaQuery.of(context).size.width;
+    final width = fullWidth - widget.railInset;
     const pad = 12.0, gap = 12.0;
-    final cols = width >= 900 ? 3 : 2;
+    final cols = fullWidth >= 900 ? 3 : 2;
     final cellW = (width - pad * 2 - gap * (cols - 1)) / cols;
 
     Widget content;

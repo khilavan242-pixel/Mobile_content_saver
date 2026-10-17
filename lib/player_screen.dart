@@ -1,20 +1,24 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'pip.dart';
 import 'tv_focus.dart';
 import 'youtube_core.dart';
 
 /// YouTube asks apps to identify themselves with a Referer made from the app id.
 const String kAppReferer = 'https://com.example.homework_companion';
 
-/// Skip length of the back / forward buttons and the remote's rewind / fast-forward.
-const int kSkip = 30;
+/// Skip length of the back / forward buttons and the remote's Left / Right keys.
+const int kSkipBack = 10;
+const int kSkipFwd = 30;
 
 /// Plays videos inside TubeBox with YouTube's embedded player. All controls are
 /// TubeBox's own (so they work with touch AND a TV remote), links out of the
@@ -45,6 +49,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _ended = false;
   bool _browse = false; // TV: "Up next" rows are open
   bool _settingsOpen = false;
+  bool _inPip = false; // floating mini player
+  bool _short = false; // current video is a YouTube Short
+  bool _fill = false; // zoom to fill the screen (pinch out)
+  bool _audio = false; // MP3-player style audio mode
+  bool _blackout = false; // black screen while listening
   String _settingsPage = 'main'; // main | quality | speed
   List<String> _qualities = [];
   String _quality = 'auto';
@@ -69,6 +78,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   YtItem get _current => widget.queue[_index];
   bool get _hasNext => _index < widget.queue.length - 1;
+  bool get _shortUi => _short && !_wide;
 
   @override
   void initState() {
@@ -85,10 +95,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
       platform.setMediaPlaybackRequiresUserGesture(false);
     }
     _load();
+    // Keep the screen awake while a video is open (like the YouTube app).
+    try {
+      WakelockPlus.enable();
+    } catch (_) {}
+    Pip.listen((v) {
+      if (!mounted) return;
+      setState(() {
+        _inPip = v;
+        if (v) _settingsOpen = false;
+      });
+    });
+    _checkShort();
   }
 
   @override
   void dispose() {
+    try {
+      WakelockPlus.disable();
+    } catch (_) {}
+    Pip.listen(null);
+    Pip.auto(false);
     _hideTimer?.cancel();
     _flashTimer?.cancel();
     _seekTimer?.cancel();
@@ -118,6 +145,67 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (mounted && !_full) _toggleFull();
       });
     }
+  }
+
+  // ------------------------------------------------- shorts / orientation / pip
+  Future<void> _checkShort() async {
+    final it = _current;
+    if (it.isPlaylist) {
+      if (_short) {
+        setState(() => _short = false);
+        _syncSystemUi();
+      }
+      return;
+    }
+    final id = it.id;
+    final r = await isShortVideo(id);
+    if (!mounted || _current.id != id) return;
+    if (r != _short) {
+      setState(() {
+        _short = r;
+        if (r && !_wide) _full = false;
+      });
+      _syncSystemUi();
+    }
+  }
+
+  Future<void> _syncSystemUi() async {
+    if (_wide) return;
+    if (_audio) {
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    } else if (_short) {
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    } else if (_full) {
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    } else {
+      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+  }
+
+  /// Pressing Home while a video plays turns it into the floating mini player.
+  void _syncPipAuto() {
+    Pip.auto(_playing && !_wide && !_audio && _errorCode == null, wide: !_shortUi);
+  }
+
+  Future<void> _enterPip() async {
+    if (_wide) return;
+    if (_settingsOpen) setState(() => _settingsOpen = false);
+    final ok = await Pip.enter(wide: !_shortUi);
+    if (!ok && mounted) _flashText('Mini player is not available on this phone');
+  }
+
+  void _setAudio(bool on) {
+    setState(() {
+      _audio = on;
+      _blackout = false;
+      _settingsOpen = false;
+    });
+    _syncSystemUi();
+    _syncPipAuto();
   }
 
   // ---------------------------------------------------------------- loading
@@ -215,9 +303,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         if (_speed != 1.0) _js('player.setPlaybackRate($_speed)');
         if (_qualities.isEmpty) _js("post('q:'+JSON.stringify(player.getAvailableQualityLevels())+'|'+player.getPlaybackQuality())");
         _scheduleHide();
+        _syncPipAuto();
       } else if (st == 2) {
         setState(() => _playing = false);
         _showControls();
+        _syncPipAuto();
       } else if (st == 0) {
         _onEnded();
       }
@@ -274,6 +364,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     }
     final it = widget.queue[i];
     _js(it.isPlaylist ? "loadPlaylist('${it.id}')" : "loadVideo('${it.id}')");
+    _checkShort();
   }
 
   void _togglePlay() {
@@ -284,13 +375,15 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     }
     setState(() => _playing = !_playing);
     _showControls();
+    _syncPipAuto();
   }
 
-  void _seekBy(int seconds) {
+  /// [showUi] false = skip quietly without opening the player menu.
+  void _seekBy(int seconds, {bool showUi = true}) {
     _js('player.seekTo(Math.max(0, player.getCurrentTime() + ($seconds)), true)');
     _pos.value = (_pos.value + seconds).clamp(0, _dur.value > 0 ? _dur.value : double.infinity).toDouble();
     _flashText(seconds > 0 ? '+$seconds s' : '$seconds s');
-    _showControls();
+    if (showUi) _showControls();
   }
 
   void _seekTo(double s, {bool now = false}) {
@@ -450,12 +543,16 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       _full = next;
       _controlsVisible = true;
     });
-    if (next) {
-      await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    if (_wide) {
+      if (next) {
+        await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      } else {
+        await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      }
     } else {
-      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      await _syncSystemUi();
     }
     _root.requestFocus();
     _scheduleHide();
@@ -499,11 +596,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.mediaFastForward) {
-      _seekBy(kSkip);
+      _seekBy(kSkipFwd);
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.mediaRewind) {
-      _seekBy(-kSkip);
+      _seekBy(-kSkipBack);
       return KeyEventResult.handled;
     }
     if (_full) {
@@ -511,11 +608,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         // Controls hidden. Left / right skip, Up / Down / OK open the controls
         // together with the "up next" videos (like the YouTube TV app).
         if (k == LogicalKeyboardKey.arrowRight) {
-          _seekBy(kSkip);
+          _seekBy(kSkipFwd, showUi: false);
           return KeyEventResult.handled;
         }
         if (k == LogicalKeyboardKey.arrowLeft) {
-          _seekBy(-kSkip);
+          _seekBy(-kSkipBack, showUi: false);
           return KeyEventResult.handled;
         }
         // Always open on the Play/Pause button; Up from there reaches the time bar.
@@ -584,24 +681,54 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     }
   }
 
-  Widget _video() {
+  Widget _video({Size? webSize, bool bare = false}) {
+    Widget web = WebViewWidget(controller: _web);
+    if (webSize != null) {
+      web = ClipRect(
+        child: OverflowBox(
+          minWidth: webSize.width,
+          maxWidth: webSize.width,
+          minHeight: webSize.height,
+          maxHeight: webSize.height,
+          child: web,
+        ),
+      );
+    }
+    // The web page must never take the remote's focus (that froze the buttons).
+    if (bare) return ColoredBox(color: Colors.black, child: ExcludeFocus(child: web));
     return ColoredBox(
       color: Colors.black,
       child: Stack(children: [
-        // The web page must never take the remote's focus (that froze the buttons).
-        Positioned.fill(child: ExcludeFocus(child: WebViewWidget(controller: _web))),
+        Positioned.fill(child: ExcludeFocus(child: web)),
         if (!_ready) const Center(child: CircularProgressIndicator()),
-        // Touch layer on top of the player: tap, double-tap to skip 10 s.
+        // Touch layer on top of the player: tap, double-tap to skip, pinch to zoom.
         Positioned.fill(
           child: _TouchLayer(
             onTap: () {
-              if (_controlsVisible) {
+              if (_shortUi) {
+                _togglePlay();
+              } else if (_controlsVisible) {
                 _hideControls();
               } else {
                 _showControls();
               }
             },
-            onSeek: _seekBy,
+            onSeek: _shortUi ? null : (s) => _seekBy(s, showUi: false),
+            onPinch: (_full && !_wide && !_shortUi)
+                ? (zoomIn) {
+                    setState(() => _fill = zoomIn);
+                    _flashText(zoomIn ? 'Zoom to fill' : 'Original');
+                  }
+                : null,
+            onSwipe: _shortUi
+                ? (dir) {
+                    if (dir < 0) {
+                      _go(_index + 1);
+                    } else {
+                      _go(_index - 1);
+                    }
+                  }
+                : null,
           ),
         ),
         // Paused / finished: hide YouTube's own "more videos" suggestions.
@@ -611,13 +738,14 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
               child: ColoredBox(
                 color: Colors.black.withOpacity(_ended ? 1.0 : (_wide ? 0.82 : 0.6)),
                 child: Center(
-                  child: (_wide || _ended) ? Icon(_ended ? Icons.replay : Icons.play_circle_outline, size: 72, color: Colors.white70) : null,
+                  child: (_wide || _ended || _shortUi) ? Icon(_ended ? Icons.replay : Icons.play_circle_outline, size: 72, color: Colors.white70) : null,
                 ),
               ),
             ),
           ),
         // Phone: YouTube-app style buttons on the video itself.
-        if (!_wide && _controlsVisible) Positioned.fill(child: _mobileOverlay()),
+        if (!_wide && !_shortUi && _controlsVisible) Positioned.fill(child: _mobileOverlay()),
+        if (_shortUi) Positioned.fill(child: _shortOverlay()),
         if (_flash != null)
           Center(
             child: Container(
@@ -626,10 +754,70 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
               child: Text(_flash!, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
             ),
           ),
-        if (_errorCode != null && ((_wide && !_controlsVisible) || (!_wide && _full)))
+        if (_errorCode != null && ((_wide && !_controlsVisible) || (!_wide && (_full || _shortUi))))
           Positioned(left: 16, right: 16, top: 56, child: _errorCard()),
       ]),
     );
+  }
+
+  /// Shorts: full-screen vertical video. Tap = pause / play, swipe up = next
+  /// Short, swipe down = previous.
+  Widget _shortOverlay() {
+    final it = _current;
+    return Stack(children: [
+      Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        child: IgnorePointer(
+          child: Container(height: 120, decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black54, Colors.transparent]))),
+        ),
+      ),
+      Positioned(
+        bottom: 0,
+        left: 0,
+        right: 0,
+        child: IgnorePointer(
+          child: Container(height: 190, decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black87]))),
+        ),
+      ),
+      Positioned(
+        top: 0,
+        left: 4,
+        child: SafeArea(child: IconButton(tooltip: 'Back', iconSize: 28, onPressed: () => Navigator.of(context).maybePop(), icon: const Icon(Icons.arrow_back, color: Colors.white))),
+      ),
+      Positioned(
+        top: 0,
+        right: 4,
+        child: SafeArea(
+          child: Row(children: [
+            IconButton(tooltip: 'Mini player', onPressed: _enterPip, icon: const Icon(Icons.picture_in_picture_alt_outlined, color: Colors.white)),
+            IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.more_vert, color: Colors.white)),
+          ]),
+        ),
+      ),
+      Positioned(
+        left: 16,
+        right: 16,
+        bottom: 28,
+        child: IgnorePointer(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              it.hasRealTitle ? it.plainTitle : 'YouTube Short',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, height: 1.25),
+            ),
+            if (widget.queue.length > 1)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('${_index + 1} of ${widget.queue.length}  -  swipe up for next', style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              ),
+          ]),
+        ),
+      ),
+      Positioned(left: 0, right: 0, bottom: -4, child: _seekBar(times: false)),
+    ]);
   }
 
   Widget _seekBar({bool times = true}) {
@@ -736,6 +924,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         top: 2,
         right: 2,
         child: Row(children: [
+          IconButton(tooltip: 'Mini player', onPressed: _enterPip, icon: const Icon(Icons.picture_in_picture_alt_outlined, color: Colors.white)),
           IconButton(
             tooltip: 'Captions',
             onPressed: _toggleCaptions,
@@ -766,6 +955,15 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             ),
           ),
           const Spacer(),
+          if (_full)
+            IconButton(
+              tooltip: _fill ? 'Original size' : 'Zoom to fill',
+              onPressed: () {
+                setState(() => _fill = !_fill);
+                _flashText(_fill ? 'Zoom to fill' : 'Original');
+              },
+              icon: Icon(_fill ? Icons.zoom_in_map : Icons.zoom_out_map, color: Colors.white),
+            ),
           IconButton(
             tooltip: _full ? 'Exit full screen' : 'Full screen',
             onPressed: _toggleFull,
@@ -852,6 +1050,8 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           _nextMode();
           _closeSettings();
         }),
+        if (!_wide) _settingsRow(Icons.headphones, 'Audio mode (MP3 player)', onTap: () => _setAudio(true)),
+        if (!_wide) _settingsRow(Icons.picture_in_picture_alt_outlined, 'Mini player', onTap: _enterPip),
         _settingsRow(Icons.open_in_new, 'Open in YouTube app', onTap: () {
           _closeSettings();
           _openInYouTube();
@@ -903,7 +1103,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         runSpacing: 4,
         children: [
           IconButton.filledTonal(tooltip: 'Previous', onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
-          IconButton.filledTonal(tooltip: 'Back 30 s', onPressed: () => _seekBy(-kSkip), icon: const Icon(Icons.replay_30)),
+          IconButton.filledTonal(tooltip: 'Back 10 s', onPressed: () => _seekBy(-kSkipBack), icon: const Icon(Icons.replay_10)),
           IconButton.filled(
             tooltip: _playing ? 'Pause' : 'Play',
             iconSize: 32,
@@ -911,7 +1111,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             onPressed: _ended ? _replay : _togglePlay,
             icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
           ),
-          IconButton.filledTonal(tooltip: 'Forward 30 s', onPressed: () => _seekBy(kSkip), icon: const Icon(Icons.forward_30)),
+          IconButton.filledTonal(tooltip: 'Forward 30 s', onPressed: () => _seekBy(kSkipFwd), icon: const Icon(Icons.forward_30)),
           IconButton.filledTonal(tooltip: 'Next', onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
           gap,
           FilledButton.tonal(onPressed: _cycleSpeed, child: Text(_speedLabel(_speed))),
@@ -1009,7 +1209,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
               // centre group
               IconButton.filledTonal(tooltip: 'Previous', iconSize: 30, onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
               const SizedBox(width: 8),
-              IconButton.filledTonal(tooltip: 'Back $kSkip s', iconSize: 30, onPressed: () => _seekBy(-kSkip), icon: const Icon(Icons.replay_30)),
+              IconButton.filledTonal(tooltip: 'Back $kSkipBack s', iconSize: 30, onPressed: () => _seekBy(-kSkipBack), icon: const Icon(Icons.replay_10)),
               const SizedBox(width: 8),
               IconButton.filled(
                 tooltip: _playing ? 'Pause' : 'Play',
@@ -1020,7 +1220,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
                 icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow)),
               ),
               const SizedBox(width: 8),
-              IconButton.filledTonal(tooltip: 'Forward $kSkip s', iconSize: 30, onPressed: () => _seekBy(kSkip), icon: const Icon(Icons.forward_30)),
+              IconButton.filledTonal(tooltip: 'Forward $kSkipFwd s', iconSize: 30, onPressed: () => _seekBy(kSkipFwd), icon: const Icon(Icons.forward_30)),
               const SizedBox(width: 8),
               IconButton.filledTonal(tooltip: 'Next', iconSize: 30, onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
               // right group
@@ -1218,6 +1418,12 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           onChanged: (v) => setState(() => _autoNext = v),
         ),
         OutlinedButton.icon(onPressed: _openInYouTube, icon: const Icon(Icons.open_in_new), label: const Text('Open in YouTube app')),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(child: OutlinedButton.icon(onPressed: () => _setAudio(true), icon: const Icon(Icons.headphones), label: const Text('Audio mode'))),
+          const SizedBox(width: 8),
+          Expanded(child: OutlinedButton.icon(onPressed: _enterPip, icon: const Icon(Icons.picture_in_picture_alt_outlined), label: const Text('Mini player'))),
+        ]),
         if (widget.queue.length > 1) ...[
           const SizedBox(height: 18),
           const Text('Up next', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
@@ -1256,12 +1462,154 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     );
   }
 
+  // -------------------------------------------------------------- audio mode
+  Widget _audioView() {
+    final it = _current;
+    final primary = Theme.of(context).colorScheme.primary;
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFF2A1B5C), Color(0xFF0F0B1E), Colors.black]),
+      ),
+      child: SafeArea(
+        child: Column(children: [
+          Row(children: [
+            IconButton(tooltip: 'Back to video', onPressed: () => _setAudio(false), icon: const Icon(Icons.keyboard_arrow_down, size: 32)),
+            const Expanded(child: Text('Audio mode', textAlign: TextAlign.center, style: TextStyle(fontSize: 15, color: Colors.white70))),
+            IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.more_vert)),
+          ]),
+          Expanded(
+            flex: 5,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(36, 8, 36, 8),
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: 1,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [BoxShadow(color: primary.withOpacity(0.35), blurRadius: 40, spreadRadius: 2)],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: Image.network(it.thumbUrlHq, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26, child: Icon(Icons.music_note, size: 80))),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(children: [
+              Text(it.hasRealTitle ? it.plainTitle : 'YouTube video', maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, height: 1.25)),
+              const SizedBox(height: 4),
+              Text(widget.queue.length > 1 ? 'Track ${_index + 1} of ${widget.queue.length}' : 'Now playing', style: const TextStyle(color: Colors.white60, fontSize: 13)),
+              const SizedBox(height: 10),
+              _seekBar(),
+            ]),
+          ),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            IconButton(tooltip: 'Repeat', iconSize: 26, onPressed: _cycleRepeat, icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? Colors.white70 : primary)),
+            IconButton(tooltip: 'Previous', iconSize: 40, onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
+            IconButton.filled(tooltip: _playing ? 'Pause' : 'Play', iconSize: 46, onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
+            IconButton(tooltip: 'Next', iconSize: 40, onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
+            TextButton(onPressed: _cycleSpeed, child: Text(_speedLabel(_speed), style: const TextStyle(fontSize: 16))),
+          ]),
+          TextButton.icon(
+            onPressed: () => setState(() => _blackout = true),
+            icon: const Icon(Icons.brightness_2_outlined, size: 18),
+            label: const Text('Black screen (double-tap to wake)'),
+          ),
+          if (widget.queue.length > 1)
+            Expanded(
+              flex: 3,
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                itemCount: widget.queue.length,
+                itemBuilder: (context, i) {
+                  final q = widget.queue[i];
+                  final cur = i == _index;
+                  return ListTile(
+                    dense: true,
+                    selected: cur,
+                    selectedTileColor: primary.withOpacity(0.2),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    leading: cur ? Icon(Icons.equalizer, color: primary) : Text('${i + 1}', style: const TextStyle(color: Colors.white54)),
+                    title: Text(q.hasRealTitle ? q.plainTitle : 'YouTube video', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    onTap: () => _go(i),
+                  );
+                },
+              ),
+            )
+          else
+            const SizedBox(height: 16),
+        ]),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------ build
+  Widget _body() {
+    // Floating mini player: video only.
+    if (_inPip) return SizedBox.expand(child: _video(bare: true));
+
+    // Audio mode: the player shrinks to a few pixels, the music UI is shown.
+    if (_audio && !_wide) {
+      return Stack(children: [
+        Positioned(left: 0, top: 0, width: 4, height: 4, child: _video(bare: true)),
+        Positioned.fill(child: _audioView()),
+        if (_blackout)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onDoubleTap: () => setState(() => _blackout = false),
+              child: const ColoredBox(color: Colors.black, child: Center(child: Text('Double-tap to wake', style: TextStyle(color: Colors.white24)))),
+            ),
+          ),
+        if (_settingsOpen) Positioned.fill(child: _settingsLayer()),
+      ]);
+    }
+
+    return Stack(children: [
+      Positioned.fill(
+        child: SafeArea(
+          top: !(_full || _shortUi),
+          bottom: !(_full || _shortUi),
+          left: !_full,
+          right: !_full,
+          child: LayoutBuilder(builder: (context, c) {
+            if (_shortUi) return _video();
+            if (_full) {
+              final fitW = math.min(c.maxWidth, c.maxHeight * 16 / 9);
+              final fitH = fitW * 9 / 16;
+              final zoom = _fill && !_wide;
+              final k = zoom ? math.max(c.maxWidth / fitW, c.maxHeight / fitH) : 1.0;
+              return Stack(children: [
+                Positioned.fill(
+                  child: zoom ? _video(webSize: Size(fitW * k, fitH * k)) : Center(child: AspectRatio(aspectRatio: 16 / 9, child: _video())),
+                ),
+                if (_wide && _controlsVisible) Positioned.fill(child: _fullOverlay()),
+              ]);
+            }
+            return Column(children: [
+              AspectRatio(aspectRatio: 16 / 9, child: _video()),
+              Expanded(child: _panel(wide: false)),
+            ]);
+          }),
+        ),
+      ),
+      if (_settingsOpen) Positioned.fill(child: _settingsLayer()),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final tvControls = _wide && _full && _controlsVisible;
+    final blockPop = _settingsOpen || _browse || tvControls || _blackout || (_audio && !_wide);
     return PopScope(
-      // TV: Back goes straight back (closing the settings / video rows first if
-      // they are open). Phone: leaves full screen first.
-      canPop: (_settingsOpen || _browse) ? false : (_wide ? true : !_full),
+      // Back first closes whatever is open on top (settings, black screen,
+      // audio mode, video rows, the TV player menu) and only then leaves.
+      canPop: blockPop ? false : (_wide ? true : !_full),
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_settingsOpen) {
@@ -1270,9 +1618,15 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           } else {
             _closeSettings();
           }
+        } else if (_blackout) {
+          setState(() => _blackout = false);
+        } else if (_audio) {
+          _setAudio(false);
         } else if (_browse) {
           setState(() => _browse = false);
           WidgetsBinding.instance.addPostFrameCallback((_) => _playNode.requestFocus());
+        } else if (tvControls) {
+          _hideControls();
         } else if (!_wide) {
           _toggleFull();
         }
@@ -1281,56 +1635,71 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         focusNode: _root,
         autofocus: true,
         onKeyEvent: _onKey,
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Stack(children: [
-            Positioned.fill(
-              child: SafeArea(
-                top: !_full,
-                bottom: !_full,
-                left: !_full,
-                right: !_full,
-                child: LayoutBuilder(builder: (context, c) {
-                  if (_full) {
-                    return Stack(children: [
-                      Positioned.fill(child: Center(child: AspectRatio(aspectRatio: 16 / 9, child: _video()))),
-                      if (_wide && _controlsVisible) Positioned.fill(child: _fullOverlay()),
-                    ]);
-                  }
-                  return Column(children: [
-                    AspectRatio(aspectRatio: 16 / 9, child: _video()),
-                    Expanded(child: _panel(wide: false)),
-                  ]);
-                }),
-              ),
-            ),
-            if (_settingsOpen) Positioned.fill(child: _settingsLayer()),
-          ]),
-        ),
+        child: Scaffold(backgroundColor: Colors.black, body: _body()),
       ),
     );
   }
 }
 
-/// Transparent layer: single tap and double-tap on the left / right half to
-/// jump back / forward 10 seconds (like the YouTube app).
-class _TouchLayer extends StatelessWidget {
+/// Transparent layer: tap, double-tap on the left / right half to skip,
+/// pinch to zoom, vertical swipe (Shorts).
+class _TouchLayer extends StatefulWidget {
   final VoidCallback onTap;
-  final void Function(int seconds) onSeek;
-  const _TouchLayer({Key? key, required this.onTap, required this.onSeek}) : super(key: key);
+  final void Function(int seconds)? onSeek;
+  final void Function(bool zoomIn)? onPinch;
+  final void Function(int dir)? onSwipe;
+  const _TouchLayer({Key? key, required this.onTap, this.onSeek, this.onPinch, this.onSwipe}) : super(key: key);
+
+  @override
+  State<_TouchLayer> createState() => _TouchLayerState();
+}
+
+class _TouchLayerState extends State<_TouchLayer> {
+  Offset? _last;
+  double _scale = 1;
+  double _dy = 0;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, c) {
-      Offset? last;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        onDoubleTapDown: (d) => last = d.localPosition,
-        onDoubleTap: () {
-          final x = last?.dx ?? c.maxWidth / 2;
-          onSeek(x < c.maxWidth / 2 ? -10 : 10);
-        },
+        onTap: widget.onTap,
+        onDoubleTapDown: widget.onSeek == null ? null : (d) => _last = d.localPosition,
+        onDoubleTap: widget.onSeek == null
+            ? null
+            : () {
+                final x = _last?.dx ?? c.maxWidth / 2;
+                widget.onSeek!(x < c.maxWidth / 2 ? -kSkipBack : kSkipBack);
+              },
+        onScaleStart: widget.onPinch == null ? null : (_) => _scale = 1,
+        onScaleUpdate: widget.onPinch == null
+            ? null
+            : (d) {
+                if (d.pointerCount >= 2) _scale = d.scale;
+              },
+        onScaleEnd: widget.onPinch == null
+            ? null
+            : (_) {
+                if (_scale > 1.12) {
+                  widget.onPinch!(true);
+                } else if (_scale < 0.88) {
+                  widget.onPinch!(false);
+                }
+                _scale = 1;
+              },
+        onVerticalDragStart: widget.onSwipe == null ? null : (_) => _dy = 0,
+        onVerticalDragUpdate: widget.onSwipe == null ? null : (d) => _dy += d.delta.dy,
+        onVerticalDragEnd: widget.onSwipe == null
+            ? null
+            : (d) {
+                final v = d.primaryVelocity ?? 0;
+                if (v < -300 || _dy < -80) {
+                  widget.onSwipe!(-1);
+                } else if (v > 300 || _dy > 80) {
+                  widget.onSwipe!(1);
+                }
+              },
       );
     });
   }

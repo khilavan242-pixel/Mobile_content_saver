@@ -470,3 +470,29 @@ Future<PlaylistResult> fetchPlaylist(String playlistId, {void Function(int found
         : 'This playlist is private, empty or deleted, so its videos cannot be read.',
   );
 }
+
+
+final Map<String, bool> _shortCache = {};
+
+/// True when [id] is a YouTube Short. youtube.com/shorts/ID answers 200 for a
+/// Short and redirects for a normal video (checked without following it).
+Future<bool> isShortVideo(String id) async {
+  final cached = _shortCache[id];
+  if (cached != null) return cached;
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  try {
+    final req = await client.getUrl(Uri.parse('https://www.youtube.com/shorts/$id'));
+    req.followRedirects = false;
+    req.headers.set(HttpHeaders.userAgentHeader, _desktopUa);
+    req.headers.set(HttpHeaders.cookieHeader, 'SOCS=CAI; CONSENT=YES+1');
+    final res = await req.close().timeout(const Duration(seconds: 8));
+    await res.drain<void>();
+    final r = res.statusCode == 200;
+    _shortCache[id] = r;
+    return r;
+  } catch (_) {
+    return false;
+  } finally {
+    client.close();
+  }
+}
