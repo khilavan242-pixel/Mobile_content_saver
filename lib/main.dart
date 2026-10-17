@@ -9,6 +9,7 @@ import 'prefs.dart';
 
 import 'm3u_files.dart';
 import 'm3u_store.dart';
+import 'player_host.dart';
 import 'tv_sync.dart';
 
 const Color kAccent = Color(0xFF8B5CF6); // violet, matches the app icon
@@ -93,6 +94,7 @@ class TubeBoxApp extends StatelessWidget {
       title: 'TubeBox',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
+      builder: (context, child) => PlayerLayer(child: child ?? const SizedBox.shrink()),
       home: const StartupGate(),
     );
   }
@@ -365,6 +367,8 @@ class _HomeShellState extends State<HomeShell> {
 
   /// Back: other tab -> first tab, first tab -> "Exit TubeBox?" question.
   Future<void> _onBack() async {
+    // An open player takes Back first (closes its menu or shrinks to the mini bar).
+    if (PlayerHost.instance.handleBack()) return;
     if (_index != 0) {
       _go(0);
       return;

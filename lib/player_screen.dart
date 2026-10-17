@@ -9,7 +9,9 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'media.dart';
 import 'pip.dart';
+import 'player_host.dart';
 import 'tv_focus.dart';
 import 'youtube_core.dart';
 
@@ -26,13 +28,17 @@ const int kSkipFwd = 30;
 class PlayerScreen extends StatefulWidget {
   final List<YtItem> queue;
   final int startIndex;
-  const PlayerScreen({Key? key, required this.queue, this.startIndex = 0}) : super(key: key);
+  /// Shown as the little bar at the bottom while you browse (like YouTube).
+  final bool minimized;
+  /// Shown inside the floating window (Picture-in-Picture).
+  final bool inPip;
+  const PlayerScreen({Key? key, required this.queue, this.startIndex = 0, this.minimized = false, this.inPip = false}) : super(key: key);
 
   @override
   _PlayerScreenState createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
   static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
   late final WebViewController _web;
@@ -49,7 +55,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _ended = false;
   bool _browse = false; // TV: "Up next" rows are open
   bool _settingsOpen = false;
-  bool _inPip = false; // floating mini player
+  final GlobalKey _webKey = GlobalKey(debugLabel: 'player-web');
+  bool _wantPlay = true; // false only when the user paused on purpose
+  DateTime _lastShift = DateTime.now();
+  AppLifecycleState _app = AppLifecycleState.resumed;
   bool _short = false; // current video is a YouTube Short
   bool _fill = false; // zoom to fill the screen (pinch out)
   bool _audio = false; // MP3-player style audio mode
@@ -79,6 +88,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   YtItem get _current => widget.queue[_index];
   bool get _hasNext => _index < widget.queue.length - 1;
   bool get _shortUi => _short && !_wide;
+  bool get _inPip => widget.inPip;
 
   @override
   void initState() {
@@ -99,23 +109,140 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       WakelockPlus.enable();
     } catch (_) {}
-    Pip.listen((v) {
-      if (!mounted) return;
-      setState(() {
-        _inPip = v;
-        if (v) _settingsOpen = false;
-      });
+    WidgetsBinding.instance.addObserver(this);
+    Media.listen(_onMediaCmd);
+    PlayerHost.instance.backHandler = _handleBack;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !widget.minimized) _root.requestFocus();
     });
     _checkShort();
   }
 
   @override
+  void didUpdateWidget(PlayerScreen old) {
+    super.didUpdateWidget(old);
+    if (old.minimized != widget.minimized) {
+      _lastShift = DateTime.now();
+      if (widget.minimized) {
+        _full = false;
+        _settingsOpen = false;
+        _blackout = false;
+        _controlsVisible = true;
+      } else {
+        _scheduleHide();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _root.requestFocus();
+        });
+      }
+      _syncSystemUi();
+      _resumeSoon();
+    }
+    if (old.inPip != widget.inPip) {
+      _lastShift = DateTime.now();
+      if (widget.inPip) _settingsOpen = false;
+      _resumeSoon();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _app = state;
+    _lastShift = DateTime.now();
+    _resumeSoon();
+  }
+
+  /// YouTube sometimes pauses when the window changes (floating window, screen
+  /// off). If the user did not pause, start again.
+  void _resumeSoon() {
+    for (final ms in const [350, 1200, 2600]) {
+      Timer(Duration(milliseconds: ms), () {
+        if (mounted && _wantPlay && _ready) _js('player.playVideo()');
+      });
+    }
+  }
+
+  void _onMediaCmd(String c) {
+    if (!mounted) return;
+    switch (c) {
+      case 'play':
+        if (!_playing) _togglePlay();
+        break;
+      case 'pause':
+        if (_playing) _togglePlay();
+        break;
+      case 'next':
+        _go(_index + 1);
+        break;
+      case 'prev':
+        _go(_index - 1);
+        break;
+      case 'close':
+        PlayerHost.instance.close();
+        break;
+    }
+  }
+
+  void _leave() {
+    if (_wide) {
+      PlayerHost.instance.close();
+    } else {
+      PlayerHost.instance.minimize();
+    }
+  }
+
+  /// Android Back. Closes whatever is open on top first; the last step leaves
+  /// the player (phone: it shrinks to the mini bar and keeps playing).
+  bool _handleBack() {
+    if (!mounted) return false;
+    if (_settingsOpen) {
+      if (_settingsPage != 'main') {
+        setState(() => _settingsPage = 'main');
+      } else {
+        _closeSettings();
+      }
+      return true;
+    }
+    if (_blackout) {
+      setState(() => _blackout = false);
+      return true;
+    }
+    if (_audio && !_wide) {
+      PlayerHost.instance.minimize();
+      return true;
+    }
+    if (_browse) {
+      setState(() => _browse = false);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _playNode.requestFocus());
+      return true;
+    }
+    if (_wide && _full && _controlsVisible) {
+      _hideControls();
+      return true;
+    }
+    if (!_wide && _full) {
+      _toggleFull();
+      return true;
+    }
+    _leave();
+    return true;
+  }
+
+  @override
   void dispose() {
-    try {
-      WakelockPlus.disable();
-    } catch (_) {}
-    Pip.listen(null);
-    Pip.auto(false);
+    WidgetsBinding.instance.removeObserver(this);
+    Media.release(_onMediaCmd);
+    if (PlayerHost.instance.backHandler == _handleBack) PlayerHost.instance.backHandler = null;
+    // A new player may already have started (another video was opened).
+    final stillActive = PlayerHost.instance.active;
+    if (!stillActive) {
+      try {
+        WakelockPlus.disable();
+      } catch (_) {}
+      Media.stop();
+      Pip.auto(false);
+      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
     _hideTimer?.cancel();
     _flashTimer?.cancel();
     _seekTimer?.cancel();
@@ -127,8 +254,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _overlayScroll.dispose();
     _pos.dispose();
     _dur.dispose();
-    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -171,6 +296,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _syncSystemUi() async {
     if (_wide) return;
+    if (widget.minimized) {
+      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      return;
+    }
     if (_audio) {
       await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -189,6 +319,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// Pressing Home while a video plays turns it into the floating mini player.
   void _syncPipAuto() {
     Pip.auto(_playing && !_wide && !_audio && _errorCode == null, wide: !_shortUi);
+    // Media notification: lock screen / headset / notification buttons.
+    Media.show(
+      title: _current.hasRealTitle ? _current.plainTitle : 'YouTube video',
+      subtitle: widget.queue.length > 1 ? '${_index + 1} of ${widget.queue.length}' : 'TubeBox',
+      playing: _playing,
+      hasPrev: _index > 0,
+      hasNext: _hasNext,
+    );
   }
 
   Future<void> _enterPip() async {
@@ -295,6 +433,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     } else if (m.startsWith('state:')) {
       final st = int.tryParse(m.substring(6)) ?? -1;
       if (st == 1) {
+        _wantPlay = true;
         if (!_playing || _errorCode != null || _ended) setState(() {
           _playing = true;
           _errorCode = null;
@@ -305,6 +444,12 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         _scheduleHide();
         _syncPipAuto();
       } else if (st == 2) {
+        final shifting = _app != AppLifecycleState.resumed || widget.inPip || DateTime.now().difference(_lastShift) < const Duration(seconds: 3);
+        if (_wantPlay && shifting) {
+          // Not the user: the window changed. Keep playing.
+          _js('player.playVideo()');
+          return;
+        }
         setState(() => _playing = false);
         _showControls();
         _syncPipAuto();
@@ -326,6 +471,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     } else if (_repeat == 1 && _autoNext) {
       _go(0);
     } else {
+      _wantPlay = false;
       setState(() {
         _playing = false;
         _ended = true;
@@ -363,8 +509,10 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       });
     }
     final it = widget.queue[i];
+    _wantPlay = true;
     _js(it.isPlaylist ? "loadPlaylist('${it.id}')" : "loadVideo('${it.id}')");
     _checkShort();
+    _syncPipAuto();
   }
 
   void _togglePlay() {
@@ -374,6 +522,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       _js('player.playVideo()');
     }
     setState(() => _playing = !_playing);
+    _wantPlay = _playing;
     _showControls();
     _syncPipAuto();
   }
@@ -422,6 +571,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
   }
 
   void _replay() {
+    _wantPlay = true;
     setState(() {
       _ended = false;
       _playing = true;
@@ -682,7 +832,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
   }
 
   Widget _video({Size? webSize, bool bare = false}) {
-    Widget web = WebViewWidget(controller: _web);
+    Widget web = WebViewWidget(key: _webKey, controller: _web);
     if (webSize != null) {
       web = ClipRect(
         child: OverflowBox(
@@ -728,7 +878,12 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
                       _go(_index - 1);
                     }
                   }
-                : null,
+                : (!_wide && !_full
+                    ? (dir) {
+                        // Swipe down on the video: shrink to the mini bar.
+                        if (dir > 0) PlayerHost.instance.minimize();
+                      }
+                    : null),
           ),
         ),
         // Paused / finished: hide YouTube's own "more videos" suggestions.
@@ -784,14 +939,13 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       Positioned(
         top: 0,
         left: 4,
-        child: SafeArea(child: IconButton(tooltip: 'Back', iconSize: 28, onPressed: () => Navigator.of(context).maybePop(), icon: const Icon(Icons.arrow_back, color: Colors.white))),
+        child: SafeArea(child: IconButton(tooltip: 'Back', iconSize: 28, onPressed: _leave, icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white))),
       ),
       Positioned(
         top: 0,
         right: 4,
         child: SafeArea(
           child: Row(children: [
-            IconButton(tooltip: 'Mini player', onPressed: _enterPip, icon: const Icon(Icons.picture_in_picture_alt_outlined, color: Colors.white)),
             IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.more_vert, color: Colors.white)),
           ]),
         ),
@@ -916,7 +1070,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         child: IconButton(
           tooltip: _full ? 'Exit full screen' : 'Close player',
           iconSize: 34,
-          onPressed: _full ? _toggleFull : () => Navigator.of(context).maybePop(),
+          onPressed: _full ? _toggleFull : _leave,
           icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white),
         ),
       ),
@@ -924,7 +1078,6 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         top: 2,
         right: 2,
         child: Row(children: [
-          IconButton(tooltip: 'Mini player', onPressed: _enterPip, icon: const Icon(Icons.picture_in_picture_alt_outlined, color: Colors.white)),
           IconButton(
             tooltip: 'Captions',
             onPressed: _toggleCaptions,
@@ -1050,8 +1203,8 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           _nextMode();
           _closeSettings();
         }),
-        if (!_wide) _settingsRow(Icons.headphones, 'Audio mode (MP3 player)', onTap: () => _setAudio(true)),
-        if (!_wide) _settingsRow(Icons.picture_in_picture_alt_outlined, 'Mini player', onTap: _enterPip),
+        if (!_wide) _settingsRow(_audio ? Icons.videocam_outlined : Icons.headphones, _audio ? 'Video mode' : 'Audio mode (MP3 player)', onTap: () => _setAudio(!_audio)),
+        if (!_wide) _settingsRow(Icons.picture_in_picture_alt_outlined, 'Floating window (over other apps)', onTap: _enterPip),
         _settingsRow(Icons.open_in_new, 'Open in YouTube app', onTap: () {
           _closeSettings();
           _openInYouTube();
@@ -1234,7 +1387,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
                       icon: Icon(_captions ? Icons.closed_caption : Icons.closed_caption_off_outlined),
                     ),
                     IconButton.filledTonal(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.settings)),
-                    IconButton.filledTonal(tooltip: 'Close player', onPressed: () => Navigator.of(context).maybePop(), icon: const Icon(Icons.close)),
+                    IconButton.filledTonal(tooltip: 'Close player', onPressed: PlayerHost.instance.close, icon: const Icon(Icons.close)),
                   ]),
                 ),
               ),
@@ -1394,7 +1547,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
         Row(children: [
-          IconButton(tooltip: 'Back', onPressed: () => Navigator.of(context).maybePop(), icon: const Icon(Icons.arrow_back)),
+          IconButton(tooltip: 'Minimize', onPressed: _leave, icon: const Icon(Icons.keyboard_arrow_down)),
           Expanded(
             child: Text(
               widget.queue.length > 1 ? 'Playing ${_index + 1} of ${widget.queue.length}' : 'TubeBox player',
@@ -1419,11 +1572,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         ),
         OutlinedButton.icon(onPressed: _openInYouTube, icon: const Icon(Icons.open_in_new), label: const Text('Open in YouTube app')),
         const SizedBox(height: 8),
-        Row(children: [
-          Expanded(child: OutlinedButton.icon(onPressed: () => _setAudio(true), icon: const Icon(Icons.headphones), label: const Text('Audio mode'))),
-          const SizedBox(width: 8),
-          Expanded(child: OutlinedButton.icon(onPressed: _enterPip, icon: const Icon(Icons.picture_in_picture_alt_outlined), label: const Text('Mini player'))),
-        ]),
+        OutlinedButton.icon(onPressed: () => _setAudio(true), icon: const Icon(Icons.headphones), label: const Text('Audio mode (MP3 player)')),
         if (widget.queue.length > 1) ...[
           const SizedBox(height: 18),
           const Text('Up next', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
@@ -1473,7 +1622,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       child: SafeArea(
         child: Column(children: [
           Row(children: [
-            IconButton(tooltip: 'Back to video', onPressed: () => _setAudio(false), icon: const Icon(Icons.keyboard_arrow_down, size: 32)),
+            IconButton(tooltip: 'Minimize', onPressed: _leave, icon: const Icon(Icons.keyboard_arrow_down, size: 32)),
             const Expanded(child: Text('Audio mode', textAlign: TextAlign.center, style: TextStyle(fontSize: 15, color: Colors.white70))),
             IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.more_vert)),
           ]),
@@ -1602,41 +1751,74 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     ]);
   }
 
+  /// The little bar shown at the bottom while you browse the app.
+  Widget _miniBar() {
+    final it = _current;
+    final primary = Theme.of(context).colorScheme.primary;
+    final title = it.hasRealTitle ? it.plainTitle : 'YouTube video';
+    return Material(
+      color: const Color(0xFF1F1A3A),
+      elevation: 10,
+      borderRadius: BorderRadius.circular(14),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: PlayerHost.instance.expand,
+        child: Stack(children: [
+          Row(children: [
+            SizedBox(
+              width: 117,
+              height: 66,
+              child: Stack(fit: StackFit.expand, children: [
+                if (_audio)
+                  Image.network(it.thumbUrl, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26))
+                else
+                  _video(bare: true),
+                if (_audio) Positioned(left: 0, top: 0, width: 4, height: 4, child: _video(bare: true)),
+                Positioned.fill(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: PlayerHost.instance.expand)),
+              ]),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, height: 1.2)),
+                  if (widget.queue.length > 1) Text('${_index + 1} of ${widget.queue.length}', style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                ]),
+              ),
+            ),
+            IconButton(tooltip: _playing ? 'Pause' : 'Play', onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
+            if (_hasNext) IconButton(tooltip: 'Next', onPressed: () => _go(_index + 1), icon: const Icon(Icons.skip_next)),
+            IconButton(tooltip: 'Close', onPressed: PlayerHost.instance.close, icon: const Icon(Icons.close)),
+          ]),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: ValueListenableBuilder<double>(
+              valueListenable: _dur,
+              builder: (context, dur, _) => ValueListenableBuilder<double>(
+                valueListenable: _pos,
+                builder: (context, pos, __) => LinearProgressIndicator(
+                  value: dur > 0 ? (pos / dur).clamp(0.0, 1.0).toDouble() : 0,
+                  minHeight: 2.5,
+                  backgroundColor: Colors.white12,
+                  color: primary,
+                ),
+              ),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final tvControls = _wide && _full && _controlsVisible;
-    final blockPop = _settingsOpen || _browse || tvControls || _blackout || (_audio && !_wide);
-    return PopScope(
-      // Back first closes whatever is open on top (settings, black screen,
-      // audio mode, video rows, the TV player menu) and only then leaves.
-      canPop: blockPop ? false : (_wide ? true : !_full),
-      onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
-        if (_settingsOpen) {
-          if (_settingsPage != 'main') {
-            setState(() => _settingsPage = 'main');
-          } else {
-            _closeSettings();
-          }
-        } else if (_blackout) {
-          setState(() => _blackout = false);
-        } else if (_audio) {
-          _setAudio(false);
-        } else if (_browse) {
-          setState(() => _browse = false);
-          WidgetsBinding.instance.addPostFrameCallback((_) => _playNode.requestFocus());
-        } else if (tvControls) {
-          _hideControls();
-        } else if (!_wide) {
-          _toggleFull();
-        }
-      },
-      child: Focus(
-        focusNode: _root,
-        autofocus: true,
-        onKeyEvent: _onKey,
-        child: Scaffold(backgroundColor: Colors.black, body: _body()),
-      ),
+    return Focus(
+      focusNode: _root,
+      autofocus: true,
+      onKeyEvent: _onKey,
+      child: (widget.minimized && !_inPip) ? _miniBar() : Scaffold(backgroundColor: Colors.black, body: _body()),
     );
   }
 }

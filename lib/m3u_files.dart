@@ -7,7 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'm3u_editor.dart';
 import 'm3u_store.dart';
-import 'player_screen.dart';
+import 'player_host.dart';
 import 'tv_focus.dart';
 import 'voice_search.dart';
 import 'tv_sync.dart';
@@ -1163,7 +1163,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       queue.insert(0, e.item);
       start = 0;
     }
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlayerScreen(queue: queue, startIndex: start)));
+    PlayerHost.instance.open(queue, start);
   }
 
   Widget _card(Entry e, {required bool compact}) {
