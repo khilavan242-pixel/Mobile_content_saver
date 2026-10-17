@@ -72,6 +72,15 @@ ThemeData _buildTheme() {
 }
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  // If anything breaks, show the reason on screen instead of a blank page.
+  ErrorWidget.builder = (details) => Material(
+        color: const Color(0xFF3B1D1D),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(child: Text('TubeBox error:\n${details.exceptionAsString()}', style: const TextStyle(color: Colors.white, fontSize: 14))),
+        ),
+      );
   runApp(const TubeBoxApp());
 }
 
@@ -125,22 +134,25 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _hasStorageAccess() async {
+  /// Never blocks: a fresh install on a TV has no "All files access" page, so
+  /// asking is only done when the user taps the button (with a time limit).
+  Future<bool> _hasStorageAccess({bool ask = false}) async {
+    const limit = Duration(seconds: 4);
     try {
-      var status = await Permission.manageExternalStorage.status;
-      if (!status.isGranted) status = await Permission.manageExternalStorage.request();
+      var status = await Permission.manageExternalStorage.status.timeout(limit);
+      if (!status.isGranted && ask) status = await Permission.manageExternalStorage.request().timeout(const Duration(seconds: 25));
       if (status.isGranted) return true;
     } catch (_) {}
     try {
-      var s = await Permission.storage.status;
-      if (!s.isGranted) s = await Permission.storage.request();
+      var s = await Permission.storage.status.timeout(limit);
+      if (!s.isGranted && ask) s = await Permission.storage.request().timeout(const Duration(seconds: 25));
       if (s.isGranted) return true;
     } catch (_) {}
     return false;
   }
 
-  Future<void> _init() async {
-    final ok = await _hasStorageAccess();
+  Future<void> _init({bool ask = false}) async {
+    final ok = await _hasStorageAccess(ask: ask);
     final prefs = await SharedPreferences.getInstance();
     String? saved = prefs.getString('saved_base_path');
     if (ok && saved == null) {
@@ -232,6 +244,7 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
         const SizedBox(height: 20),
         FilledButton.icon(onPressed: openAppSettings, icon: const Icon(Icons.settings), label: const Text('Open Settings')),
         const SizedBox(height: 8),
+        FilledButton.tonal(onPressed: () => _init(ask: true), child: const Text('Allow file access')),
         OutlinedButton(onPressed: _init, child: const Text('I allowed it - try again')),
         TextButton(onPressed: _useAppFolder, child: const Text("Skip: use the app's own folder")),
       ]);
