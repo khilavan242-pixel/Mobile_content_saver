@@ -20,6 +20,7 @@ dependencies:
   speech_to_text: ^7.0.0
   webview_flutter_android: ^4.3.0
   url_launcher: ^6.3.0
+  wakelock_plus: ^1.2.8
 
 dependency_overrides:
   flutter_plugin_android_lifecycle: 2.0.24
