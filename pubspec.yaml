@@ -14,7 +14,6 @@ dependencies:
   permission_handler: ^11.3.0 
   path_provider: ^2.1.2
   file_picker: ^8.1.2
-  shared_preferences: 2.3.5
   android_intent_plus: ^5.0.2
   webview_flutter: ^4.10.0
   speech_to_text: ^7.0.0
