@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'prefs.dart';
 
 import 'm3u_store.dart';
 import 'youtube_core.dart';

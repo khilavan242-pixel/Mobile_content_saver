@@ -2,7 +2,7 @@ import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'prefs.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'm3u_editor.dart';
