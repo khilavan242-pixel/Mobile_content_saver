@@ -43,10 +43,24 @@ class PlayerHost extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Remote commands (from a casting phone): play / pause / next / prev / close.
+  void Function(String cmd)? commandHandler;
+  void command(String c) {
+    if (c == 'close') {
+      close();
+    } else {
+      commandHandler?.call(c);
+    }
+  }
+
+  FocusNode? _returnFocus;
+
   /// Set by the open player: handles the Back key, returns true when used.
   bool Function()? backHandler;
 
   void open(List<YtItem> q, int index) {
+    // Remember what had the remote focus so it can come back when the player closes (TV).
+    if (!active) _returnFocus = FocusManager.instance.primaryFocus;
     queue = List<YtItem>.from(q);
     start = index;
     active = true;
@@ -74,6 +88,11 @@ class PlayerHost extends ChangeNotifier {
     audioMode = false;
     session++;
     notifyListeners();
+    final back = _returnFocus;
+    _returnFocus = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (back != null && back.context != null && back.canRequestFocus) back.requestFocus();
+    });
   }
 
   /// Android Back: true when the open (full size) player took it.

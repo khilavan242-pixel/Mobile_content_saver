@@ -10,6 +10,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'media.dart';
+import 'tv_sync.dart';
 import 'pip.dart';
 import 'player_host.dart';
 import 'tv_focus.dart';
@@ -56,6 +57,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _browse = false; // TV: "Up next" rows are open
   bool _settingsOpen = false;
   final GlobalKey _webKey = GlobalKey(debugLabel: 'player-web');
+  DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _keepAlive; // restarts playback while the app is in the background
   bool _wantPlay = true; // false only when the user paused on purpose
   DateTime _lastShift = DateTime.now();
@@ -115,6 +117,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.addObserver(this);
     Media.listen(_onMediaCmd);
     PlayerHost.instance.backHandler = _handleBack;
+    PlayerHost.instance.commandHandler = _onMediaCmd;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && !widget.minimized) _root.requestFocus();
     });
@@ -170,6 +173,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _onMediaCmd(String c) {
     if (!mounted) return;
+    if (c.startsWith('seek:')) {
+      final ms = double.tryParse(c.substring(5));
+      if (ms != null) _seekTo(ms / 1000, now: true);
+      return;
+    }
     switch (c) {
       case 'play':
         if (!_playing) _togglePlay();
@@ -240,6 +248,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     Media.release(_onMediaCmd);
     if (PlayerHost.instance.backHandler == _handleBack) PlayerHost.instance.backHandler = null;
+    if (PlayerHost.instance.commandHandler == _onMediaCmd) PlayerHost.instance.commandHandler = null;
     // A new player may already have started (another video was opened).
     final stillActive = PlayerHost.instance.active;
     if (!stillActive) {
@@ -274,8 +283,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (size.width > size.height && size.width >= 700) {
       _wide = true;
       // TV / wide screen: open straight in full screen like the YouTube TV app.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_full) _toggleFull();
+      _full = true;
+      _controlsVisible = false; // video only; no player buttons until a key is pressed
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        _root.requestFocus();
+        await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       });
     }
   }
@@ -335,7 +349,30 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       playing: _playing,
       hasPrev: _index > 0,
       hasNext: _hasNext,
+      art: _current.isPlaylist ? '' : _current.thumbUrl,
     );
+  }
+
+  /// Cast: play the current list on the saved TV (TubeBox on the TV, same Wi-Fi).
+  Future<void> _cast() async {
+    final tv = await SavedTv.load();
+    if (!mounted) return;
+    if (tv == null || tv.pin.isEmpty) {
+      _flashText('Set up your TV first: TV Sync tab');
+      return;
+    }
+    _flashText('Casting to ${tv.name}...');
+    final err = await TvClient.cast(tv.ip, tv.pin, widget.queue, _index);
+    if (!mounted) return;
+    if (err != null) {
+      _flashText(err);
+      return;
+    }
+    _flashText('Playing on ${tv.name}');
+    if (_playing) _togglePlay();
+    Timer(const Duration(milliseconds: 1300), () {
+      if (mounted) PlayerHost.instance.close();
+    });
   }
 
   Future<void> _enterPip() async {
@@ -349,6 +386,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     setState(() {
       _audio = on;
       PlayerHost.instance.audioMode = on;
+      // Audio mode: lowest picture quality = least mobile data.
+      _js(on ? "player.setPlaybackQuality('tiny')" : (_quality == 'auto' ? "player.setPlaybackQuality('default')" : "player.setPlaybackQuality('$_quality')"));
       _blackout = false;
       _settingsOpen = false;
     });
@@ -419,6 +458,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         final d = double.tryParse(p[2]) ?? 0;
         if (!_seeking) _pos.value = c.isNaN ? 0 : c;
         _dur.value = d.isNaN ? 0 : d;
+        // Timeline in the notification (only while it matters).
+        if ((_audio || _app != AppLifecycleState.resumed) && DateTime.now().difference(_lastProgress) > const Duration(seconds: 2)) {
+          _lastProgress = DateTime.now();
+          Media.progress(_pos.value, _dur.value, _playing);
+        }
       }
     } else if (m.startsWith('q:')) {
       try {
@@ -450,6 +494,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           _ended = false;
         });
         if (_speed != 1.0) _js('player.setPlaybackRate($_speed)');
+        if (_audio) _js("player.setPlaybackQuality('tiny')");
         if (_qualities.isEmpty) _js("post('q:'+JSON.stringify(player.getAvailableQualityLevels())+'|'+player.getPlaybackQuality())");
         _scheduleHide();
         _syncPipAuto();
@@ -775,6 +820,17 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           _seekBy(-kSkipBack, showUi: false);
           return KeyEventResult.handled;
         }
+        // Shorts: Down = next short, Up = previous short (like swiping).
+        if (_short) {
+          if (k == LogicalKeyboardKey.arrowDown) {
+            if (_hasNext) _go(_index + 1, fromList: true);
+            return KeyEventResult.handled;
+          }
+          if (k == LogicalKeyboardKey.arrowUp) {
+            if (_index > 0) _go(_index - 1, fromList: true);
+            return KeyEventResult.handled;
+          }
+        }
         // Always open on the Play/Pause button; Up from there reaches the time bar.
         _showControls();
         return KeyEventResult.handled;
@@ -1088,6 +1144,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         top: 2,
         right: 2,
         child: Row(children: [
+          IconButton(tooltip: 'Cast to TV', onPressed: _cast, icon: const Icon(Icons.cast, color: Colors.white)),
           _autoPill(),
           IconButton(
             tooltip: 'Captions',
@@ -1840,56 +1897,45 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           Row(children: [
             IconButton(tooltip: 'Minimize', onPressed: _leave, icon: const Icon(Icons.keyboard_arrow_down, size: 32)),
             const Expanded(child: Text('Audio mode', textAlign: TextAlign.center, style: TextStyle(fontSize: 15, color: Colors.white70))),
+            IconButton(tooltip: 'Black screen (double-tap to wake)', onPressed: () => setState(() => _blackout = true), icon: const Icon(Icons.brightness_2_outlined)),
             IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.more_vert)),
           ]),
-          Expanded(
-            flex: 5,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(36, 8, 36, 8),
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: 1,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [BoxShadow(color: primary.withOpacity(0.35), blurRadius: 40, spreadRadius: 2)],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: Image.network(it.thumbUrlHq, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26, child: Icon(Icons.music_note, size: 80))),
-                    ),
-                  ),
+          // Compact "now playing" header: small cover + title, so the list gets the room.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+            child: Row(children: [
+              Container(
+                width: 84,
+                height: 84,
+                decoration: BoxDecoration(borderRadius: BorderRadius.circular(14), boxShadow: [BoxShadow(color: primary.withOpacity(0.35), blurRadius: 18)]),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image.network(it.thumbUrlHq, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black26, child: Icon(Icons.music_note, size: 36))),
                 ),
               ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: Column(children: [
-              Text(it.hasRealTitle ? it.plainTitle : 'YouTube video', maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, height: 1.25)),
-              const SizedBox(height: 4),
-              Text(widget.queue.length > 1 ? 'Track ${_index + 1} of ${widget.queue.length}' : 'Now playing', style: const TextStyle(color: Colors.white60, fontSize: 13)),
-              const SizedBox(height: 10),
-              _seekBar(),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(it.hasRealTitle ? it.plainTitle : 'YouTube video', maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16.5, fontWeight: FontWeight.w700, height: 1.25)),
+                  const SizedBox(height: 4),
+                  Text(widget.queue.length > 1 ? 'Track ${_index + 1} of ${widget.queue.length}  ·  low data' : 'Now playing  ·  low data', style: const TextStyle(color: Colors.white60, fontSize: 12.5)),
+                ]),
+              ),
             ]),
           ),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _seekBar()),
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            IconButton(tooltip: 'Repeat', iconSize: 26, onPressed: _cycleRepeat, icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? Colors.white70 : primary)),
-            IconButton(tooltip: 'Previous', iconSize: 40, onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
-            IconButton.filled(tooltip: _playing ? 'Pause' : 'Play', iconSize: 46, onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
-            IconButton(tooltip: 'Next', iconSize: 40, onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
-            TextButton(onPressed: _cycleSpeed, child: Text(_speedLabel(_speed), style: const TextStyle(fontSize: 16))),
+            IconButton(tooltip: 'Repeat', iconSize: 24, onPressed: _cycleRepeat, icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? Colors.white70 : primary)),
+            IconButton(tooltip: 'Previous', iconSize: 38, onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
+            IconButton.filled(tooltip: _playing ? 'Pause' : 'Play', iconSize: 40, onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
+            IconButton(tooltip: 'Next', iconSize: 38, onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),
+            TextButton(onPressed: _cycleSpeed, child: Text(_speedLabel(_speed), style: const TextStyle(fontSize: 15))),
           ]),
-          TextButton.icon(
-            onPressed: () => setState(() => _blackout = true),
-            icon: const Icon(Icons.brightness_2_outlined, size: 18),
-            label: const Text('Black screen (double-tap to wake)'),
-          ),
+          const Divider(height: 1, color: Colors.white12),
           if (widget.queue.length > 1)
             Expanded(
-              flex: 3,
               child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 12),
                 itemCount: widget.queue.length,
                 itemBuilder: (context, i) {
                   final q = widget.queue[i];
@@ -1899,15 +1945,18 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
                     selected: cur,
                     selectedTileColor: primary.withOpacity(0.2),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    leading: cur ? Icon(Icons.equalizer, color: primary) : Text('${i + 1}', style: const TextStyle(color: Colors.white54)),
-                    title: Text(q.hasRealTitle ? q.plainTitle : 'YouTube video', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    leading: SizedBox(
+                      width: 28,
+                      child: Center(child: cur ? Icon(Icons.equalizer, color: primary) : Text('${i + 1}', style: const TextStyle(color: Colors.white54))),
+                    ),
+                    title: Text(q.hasRealTitle ? q.plainTitle : 'YouTube video', maxLines: 2, overflow: TextOverflow.ellipsis),
                     onTap: () => _go(i),
                   );
                 },
               ),
             )
           else
-            const SizedBox(height: 16),
+            const Spacer(),
         ]),
       ),
     );

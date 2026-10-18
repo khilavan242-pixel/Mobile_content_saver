@@ -23,7 +23,7 @@ class Media {
     if (_onCmd == fn) listen(null);
   }
 
-  static Future<void> show({required String title, required String subtitle, required bool playing, required bool hasPrev, required bool hasNext}) async {
+  static Future<void> show({required String title, required String subtitle, required bool playing, required bool hasPrev, required bool hasNext, String art = ''}) async {
     if (!_asked) {
       _asked = true;
       try {
@@ -31,7 +31,14 @@ class Media {
       } catch (_) {}
     }
     try {
-      await _c.invokeMethod('show', {'title': title, 'subtitle': subtitle, 'playing': playing, 'prev': hasPrev, 'next': hasNext});
+      await _c.invokeMethod('show', {'title': title, 'subtitle': subtitle, 'playing': playing, 'prev': hasPrev, 'next': hasNext, 'art': art});
+    } catch (_) {}
+  }
+
+  /// Timeline of the notification (position / length in seconds).
+  static Future<void> progress(double pos, double dur, bool playing) async {
+    try {
+      await _c.invokeMethod('progress', {'pos': (pos * 1000).round(), 'dur': (dur * 1000).round(), 'playing': playing});
     } catch (_) {}
   }
 

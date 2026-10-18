@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'prefs.dart';
 
 import 'm3u_store.dart';
+import 'player_host.dart';
 import 'youtube_core.dart';
 
 // ============================================================================
@@ -122,6 +123,26 @@ class TvReceiver {
         return await _reply(req, 403, {'error': 'Wrong PIN'});
       }
 
+      // Cast: the phone sends the videos, the TV plays them full screen.
+      if (path == '/play' && req.method == 'POST') {
+        final text = await utf8.decoder.bind(req).join();
+        final j = jsonDecode(text) as Map<String, dynamic>;
+        final items = <YtItem>[];
+        for (final e in (j['items'] as List)) {
+          final m = e as Map<String, dynamic>;
+          items.add(YtItem(kind: (m['kind'] as String?) ?? 'video', id: (m['id'] as String?) ?? '', title: (m['title'] as String?) ?? ''));
+        }
+        if (items.isEmpty) return await _reply(req, 400, {'error': 'Nothing to play'});
+        final idx = ((j['index'] as num?) ?? 0).toInt().clamp(0, items.length - 1).toInt();
+        _addLog('Cast: ${items[idx].title}');
+        PlayerHost.instance.open(items, idx);
+        return await _reply(req, 200, {'playing': true});
+      }
+      if (path == '/cmd' && req.method == 'POST') {
+        PlayerHost.instance.command(req.uri.queryParameters['c'] ?? '');
+        return await _reply(req, 200, {'ok': true});
+      }
+
       if (path == '/files' && req.method == 'GET') {
         final list = <Map<String, dynamic>>[];
         final dir = Directory(folder);
@@ -229,6 +250,33 @@ class TvClient {
       onProgress?.call(done, ips.length);
     }
     return found;
+  }
+
+  /// Cast: ask the TV to play [items] from [index]. Returns null on success.
+  static Future<String?> cast(String ip, String pin, List<YtItem> items, int index) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final req = await client.postUrl(Uri.parse('http://$ip:$kTvPort/play'));
+      req.headers.set('x-pin', pin);
+      req.headers.contentType = ContentType.json;
+      final body = utf8.encode(jsonEncode({
+        'index': index,
+        'items': [for (final i in items) {'kind': i.kind, 'id': i.id, 'title': i.title}],
+      }));
+      req.contentLength = body.length;
+      req.add(body);
+      final res = await req.close().timeout(const Duration(seconds: 10));
+      await res.drain();
+      if (res.statusCode == 200) return null;
+      if (res.statusCode == 403) return 'Wrong PIN. Set up the TV again in TV Sync.';
+      return 'TV answered ${res.statusCode}';
+    } on TimeoutException {
+      return 'The TV did not answer in time';
+    } catch (e) {
+      return 'Cannot reach the TV';
+    } finally {
+      client.close(force: true);
+    }
   }
 
   /// Returns null on success, otherwise a readable error.

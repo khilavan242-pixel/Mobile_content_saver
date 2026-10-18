@@ -198,9 +198,58 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
     });
   }
 
+  /// TVs have no system folder picker ("no app can do this"), so they get
+  /// a simple list of the usual places instead.
+  Future<String?> _chooseFolderOnTv() async {
+    final cands = <String, String>{};
+    try {
+      final ext = await getExternalStorageDirectory();
+      if (ext != null) cands['TubeBox app folder'] = ext.path;
+    } catch (_) {}
+    for (final e in const {
+      'Downloads': '/storage/emulated/0/Download',
+      'Documents': '/storage/emulated/0/Documents',
+      'Movies': '/storage/emulated/0/Movies',
+      'Internal storage': '/storage/emulated/0',
+    }.entries) {
+      if (Directory(e.value).existsSync()) cands[e.key] = e.value;
+    }
+    try {
+      for (final d in Directory('/storage').listSync()) {
+        final n = d.path.split('/').last;
+        if (d is Directory && n != 'emulated' && n != 'self') cands['USB / SD card ($n)'] = d.path;
+      }
+    } catch (_) {}
+    if (!mounted) return null;
+    return showDialog<String>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('Choose where TubeBox keeps your .m3u files'),
+        children: [
+          for (final e in cands.entries)
+            SimpleDialogOption(
+              autofocus: e.key == cands.keys.first,
+              onPressed: () => Navigator.pop(c, e.value),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(children: [
+                  const Icon(Icons.folder_outlined),
+                  const SizedBox(width: 14),
+                  Expanded(child: Text(e.key, style: const TextStyle(fontSize: 17))),
+                  Text(e.value, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                ]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _pickFolder() async {
     try {
-      final String? dir = await FilePicker.platform.getDirectoryPath();
+      final size = MediaQuery.of(context).size;
+      final onTv = size.width >= 900 && size.width > size.height;
+      final String? dir = onTv ? await _chooseFolderOnTv() : await FilePicker.platform.getDirectoryPath();
       if (dir == null) return;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_base_path', dir);
@@ -354,7 +403,11 @@ class _HomeShellState extends State<HomeShell> {
   Future<void> _maybeStartReceiver() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool('tv_receive') ?? false) {
+      // A TV always listens, so the phone can cast to it without any setup on the TV.
+      final view = WidgetsBinding.instance.platformDispatcher.views.first;
+      final logical = view.physicalSize / view.devicePixelRatio;
+      final isTv = logical.width >= 900 && logical.width > logical.height;
+      if (isTv || (prefs.getBool('tv_receive') ?? false)) {
         await TvReceiver.instance.start(widget.basePath);
       }
     } catch (_) {}
@@ -548,7 +601,6 @@ class _TvRailState extends State<_TvRail> {
           _item(0, Icons.search, Icons.search, 'Search', widget.onSearch),
           _item(1, Icons.home_outlined, Icons.home, 'Home', widget.onHome, selected: widget.selected == 0),
           _item(2, Icons.cast_connected_outlined, Icons.cast_connected, 'TV Sync', widget.onSync, selected: widget.selected == 1),
-          const Spacer(),
           _item(3, Icons.folder_open_outlined, Icons.folder_open, 'Change folder', widget.onFolder),
         ]),
       ),
