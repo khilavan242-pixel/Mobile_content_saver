@@ -5,6 +5,9 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebView
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -91,5 +94,32 @@ class MainActivity : FlutterActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         channel?.invokeMethod("pip", isInPictureInPictureMode)
+    }
+
+    // Keep the web player alive (audio) while the app is in the background.
+    private fun wake(v: View?) {
+        if (v is WebView) {
+            v.onResume()
+            v.resumeTimers()
+        } else if (v is ViewGroup) {
+            for (i in 0 until v.childCount) wake(v.getChildAt(i))
+        }
+    }
+
+    private fun keepWebAlive() {
+        val root = window?.decorView
+        wake(root)
+        root?.postDelayed({ wake(window?.decorView) }, 400)
+        root?.postDelayed({ wake(window?.decorView) }, 1500)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        keepWebAlive()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        keepWebAlive()
     }
 }
