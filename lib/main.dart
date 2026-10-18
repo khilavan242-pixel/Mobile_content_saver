@@ -375,6 +375,7 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   final ValueNotifier<bool> _navVisible = ValueNotifier<bool>(true);
   final ValueNotifier<int> _addRequest = ValueNotifier<int>(0);
+  final ValueNotifier<int> _menuRequest = ValueNotifier<int>(0);
   final ValueNotifier<int> _searchRequest = ValueNotifier<int>(0);
   // TV side menu buttons: 0 search, 1 home, 2 TV sync, 3 folder.
   final List<FocusNode> _railNodes = List.generate(4, (i) => FocusNode(debugLabel: 'rail-$i'));
@@ -390,6 +391,7 @@ class _HomeShellState extends State<HomeShell> {
   void dispose() {
     _navVisible.dispose();
     _addRequest.dispose();
+    _menuRequest.dispose();
     _searchRequest.dispose();
     for (final n in _railNodes) {
       n.dispose();
@@ -449,6 +451,8 @@ class _HomeShellState extends State<HomeShell> {
         onGoToTvSync: () => _go(1),
         searchRequest: _searchRequest,
         addRequest: _addRequest,
+        menuRequest: _menuRequest,
+        menuExtras: _menuExtras,
         railInset: tv ? _kRailWidth : 0,
       ),
       TvSyncScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
@@ -584,23 +588,21 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Future<void> _openMenu() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1B1633),
-      showDragHandle: true,
-      builder: (c) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+  /// Rows at the end of the Menu sheet (also the whole sheet on the TV Sync page).
+  List<Widget> _menuExtras(BuildContext c) => [
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.folder_open),
+          title: const Text('Change folder'),
+          subtitle: Text(widget.basePath, maxLines: 1, overflow: TextOverflow.ellipsis),
+          onTap: () {
+            Navigator.pop(c);
+            widget.onChangeFolder();
+          },
+        ),
+        if (_index != 1)
           ListTile(
-            leading: const Icon(Icons.folder_open),
-            title: const Text('Change folder'),
-            subtitle: Text(widget.basePath, maxLines: 1, overflow: TextOverflow.ellipsis),
-            onTap: () {
-              Navigator.pop(c);
-              widget.onChangeFolder();
-            },
-          ),
-          ListTile(
+            dense: true,
             leading: const Icon(Icons.cast_connected),
             title: const Text('TV Sync and Cast'),
             subtitle: const Text('Send your lists to the TV, cast videos'),
@@ -609,16 +611,27 @@ class _HomeShellState extends State<HomeShell> {
               _go(1);
             },
           ),
-          ListTile(
-            leading: const Icon(Icons.exit_to_app),
-            title: const Text('Exit TubeBox'),
-            onTap: () {
-              Navigator.pop(c);
-              Media.quit();
-            },
-          ),
-        ]),
-      ),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.exit_to_app),
+          title: const Text('Exit TubeBox'),
+          onTap: () {
+            Navigator.pop(c);
+            Media.quit();
+          },
+        ),
+      ];
+
+  Future<void> _openMenu() async {
+    if (_index == 0) {
+      _menuRequest.value++; // the Home page shows its file actions plus the extras
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1633),
+      showDragHandle: true,
+      builder: (c) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: _menuExtras(c))),
     );
   }
 }

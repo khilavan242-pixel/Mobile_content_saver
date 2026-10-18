@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -9,6 +10,7 @@ import 'm3u_editor.dart';
 import 'm3u_store.dart';
 import 'player_host.dart';
 import 'tv_focus.dart';
+import 'tv_keyboard.dart';
 import 'voice_search.dart';
 import 'tv_sync.dart';
 import 'youtube_core.dart';
@@ -47,6 +49,10 @@ class M3uFilesScreen extends StatefulWidget {
   final ValueNotifier<int>? searchRequest;
   /// Phone: the bottom bar's "+" asks for the add-links sheet through this.
   final ValueNotifier<int>? addRequest;
+  /// Phone: the bottom bar's Menu asks for the file actions (the old three-dot menu) through this.
+  final ValueNotifier<int>? menuRequest;
+  /// Phone: extra rows (change folder, TV, exit) shown below the file actions in that menu.
+  final List<Widget> Function(BuildContext sheetContext)? menuExtras;
   /// TV: width taken by the collapsed side menu on the left.
   final double railInset;
   const M3uFilesScreen({
@@ -56,6 +62,8 @@ class M3uFilesScreen extends StatefulWidget {
     required this.onGoToTvSync,
     this.searchRequest,
     this.addRequest,
+    this.menuRequest,
+    this.menuExtras,
     this.railInset = 0,
   }) : super(key: key);
 
@@ -95,21 +103,94 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     widget.searchRequest?.addListener(_onSearchRequest);
     widget.addRequest?.addListener(_onAddRequest);
+    widget.menuRequest?.addListener(_onMenuRequest);
+    TvKeyboardHost.visibleNotifier.addListener(_onKbVisible);
     _init();
   }
+
+  void _onMenuRequest() {
+    if (mounted && _ready) _openMenuSheet();
+  }
+
+  /// The former three-dot menu, now part of the bottom "Menu" sheet.
+  Future<void> _openMenuSheet() async {
+    Widget tile(IconData icon, String title, VoidCallback run) => ListTile(
+          dense: true,
+          leading: Icon(icon),
+          title: Text(title),
+          onTap: () {
+            Navigator.pop(context);
+            run();
+          },
+        );
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: const Color(0xFF1B1633),
+      builder: (c) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+          child: ListView(shrinkWrap: true, children: [
+            tile(_grid ? Icons.view_agenda_outlined : Icons.grid_view, _grid ? 'Switch to big cards' : 'Switch to grid', _toggleGrid),
+            tile(Icons.edit_note, 'Edit .m3u as text (full page)', _openEditor),
+            tile(Icons.fact_check_outlined, 'Check which videos play', () => _checkAvailability(_visible())),
+            tile(Icons.cast_connected, 'Send this file to my TV', _sendToTv),
+            tile(Icons.select_all, 'Select all', () => setState(() => _selected.addAll(_visible().map((e) => e.id)))),
+            tile(Icons.copy, 'Copy links', () => _copyLinks(_visible().map((e) => e.item))),
+            tile(Icons.playlist_add_check, 'Expand playlists / fetch titles', () {
+              _failedPlaylists.clear();
+              _postProcess();
+            }),
+            tile(Icons.note_add_outlined, 'New .m3u file', _newFile),
+            tile(Icons.drive_file_rename_outline, 'Rename this file', _renameFile),
+            tile(Icons.delete_outline, 'Delete this file', _deleteFile),
+            if (widget.menuExtras != null) ...[const Divider(), ...widget.menuExtras!(c)],
+          ]),
+        ),
+      ),
+    );
+  }
+
+  bool _phoneSearching = false;
 
   void _onAddRequest() {
     if (mounted && _ready) _showAddSheet();
   }
 
   void _onSearchRequest() {
-    if (mounted && _ready) _openSearch();
+    if (!mounted || !_ready) return;
+    if (_isTv) {
+      _startTvSearch();
+    } else {
+      setState(() => _phoneSearching = true);
+    }
+  }
+
+  // TV: the search box becomes a real text box; the on-screen keyboard (tv_keyboard.dart) types into it.
+  bool _tvEditing = false;
+  final FocusNode _searchFocus = FocusNode();
+  bool _kbWasVisible = false;
+
+  void _onKbVisible() {
+    final v = TvKeyboardHost.visibleNotifier.value;
+    if (_kbWasVisible && !v && _tvEditing && mounted) setState(() => _tvEditing = false);
+    _kbWasVisible = v;
+  }
+
+  void _startTvSearch() {
+    widget.navVisible.value = true;
+    setState(() => _tvEditing = true);
   }
 
   @override
   void dispose() {
     widget.searchRequest?.removeListener(_onSearchRequest);
     widget.addRequest?.removeListener(_onAddRequest);
+    TvKeyboardHost.visibleNotifier.removeListener(_onKbVisible);
+    _hintTimer?.cancel();
+    widget.menuRequest?.removeListener(_onMenuRequest);
+    _searchFocus.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _searchCtrl.dispose();
     super.dispose();
@@ -143,6 +224,18 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     }
   }
 
+  bool _showShareHint = false;
+  Timer? _hintTimer;
+
+  /// "Share → TubeBox saves into X.m3u" reminder: shown for a few seconds on start / file change.
+  void _flashShareHint() {
+    _hintTimer?.cancel();
+    if (mounted) setState(() => _showShareHint = true);
+    _hintTimer = Timer(const Duration(seconds: 6), () {
+      if (mounted) setState(() => _showShareHint = false);
+    });
+  }
+
   Future<void> _init() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -164,6 +257,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     }
     if (!mounted) return;
     setState(() => _ready = true);
+    _flashShareHint();
     _postProcess();
   }
 
@@ -218,6 +312,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     await _store.writeShareConfig(f);
     if (!mounted) return;
     setState(() {});
+    _flashShareHint();
     _postProcess();
   }
 
@@ -1296,8 +1391,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
 
   Widget _searchField() {
     final hint = _scope == _Scope.current ? 'Search in ${_active?.name ?? ''}.m3u' : 'Search ${_scopeFiles.length} files';
-    if (_isTv) {
-      // TV: a focusable box that opens the search dialog (keyboard or voice).
+    if (_isTv && !_tvEditing) {
+      // TV: a focusable box; OK turns it into a real text box with the on-screen keyboard.
       return Focus(
         onKeyEvent: (n, e) {
           if (e is KeyDownEvent && (e.logicalKey == LogicalKeyboardKey.browserSearch || e.logicalKey == LogicalKeyboardKey.launchAssistant)) {
@@ -1308,7 +1403,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         },
         child: TvFocusable(
           radius: 24,
-          onTap: _openSearch,
+          onTap: _startTvSearch,
           child: Container(
             height: 44,
             padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -1337,6 +1432,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       height: 44,
       child: TextField(
         controller: _searchCtrl,
+        focusNode: _searchFocus,
+        autofocus: true,
         onChanged: (v) => setState(() => _query = v),
         textInputAction: TextInputAction.search,
         decoration: InputDecoration(
@@ -1361,20 +1458,52 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   }
 
   Widget _normalBar() {
+    final phone = !_isTv;
     return SliverAppBar(
       floating: true,
       snap: true,
       pinned: false,
       toolbarHeight: 58,
       titleSpacing: 12,
-      title: _searchField(),
+      leading: phone && _phoneSearching
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () {
+                _searchCtrl.clear();
+                setState(() {
+                  _phoneSearching = false;
+                  _query = '';
+                });
+              },
+            )
+          : null,
+      title: phone && !_phoneSearching
+          ? Row(children: [
+              ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.asset('assets/logo.png', width: 30, height: 30)),
+              const SizedBox(width: 10),
+              const Text('TubeBox', style: TextStyle(fontSize: 21, fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+            ])
+          : _searchField(),
       actions: [
+        if (phone && !_phoneSearching)
+          IconButton(tooltip: 'Search', onPressed: () => setState(() => _phoneSearching = true), icon: const Icon(Icons.search)),
         IconButton(
-          tooltip: 'Search & filters',
+          tooltip: 'Filters',
           onPressed: _showFilterSheet,
           icon: Badge(isLabelVisible: _filtersActive, smallSize: 9, child: const Icon(Icons.tune)),
         ),
-        PopupMenuButton<String>(
+        if (!phone) _fileMenuButton(),
+      ],
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(48),
+        child: _contextRow(),
+      ),
+    );
+  }
+
+  Widget _fileMenuButton() {
+    return
+PopupMenuButton<String>(
           onSelected: (v) {
             switch (v) {
               case 'view':
@@ -1422,13 +1551,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
             const PopupMenuItem(value: 'rename', child: Text('Rename this file')),
             const PopupMenuItem(value: 'delete', child: Text('Delete this file')),
           ],
-        ),
-      ],
-      bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(48),
-        child: _contextRow(),
-      ),
-    );
+        );
   }
 
   Widget _selectionBar(List<Entry> visible) {
@@ -1491,6 +1614,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_showShareHint)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),

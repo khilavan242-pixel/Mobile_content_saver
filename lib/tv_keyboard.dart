@@ -9,6 +9,9 @@ import 'package:flutter/services.dart';
 /// Arrows move over the keys, OK types, "Done" returns to the screen.
 /// Phones are not affected.
 class TvKeyboardHost extends StatefulWidget {
+  /// True while the keyboard is on screen (screens can end "editing" when it closes).
+  static final ValueNotifier<bool> visibleNotifier = ValueNotifier<bool>(false);
+
   final Widget child;
   const TvKeyboardHost({Key? key, required this.child}) : super(key: key);
 
@@ -18,7 +21,20 @@ class TvKeyboardHost extends StatefulWidget {
 
 class _TvKeyboardHostState extends State<TvKeyboardHost> {
   final FocusNode _scope = FocusNode(debugLabel: 'tvKeyboard', canRequestFocus: false, skipTraversal: true);
-  final FocusNode _firstKey = FocusNode(debugLabel: 'tvKeyboardFirst');
+  // One focus node per key; rows are [10, 10, 10, 10, 7] keys.
+  static const List<int> _rowLens = [10, 10, 10, 10, 7];
+  final List<List<FocusNode>> _nodes = [
+    for (final n in _rowLens) [for (int i = 0; i < n; i++) FocusNode(debugLabel: 'kb')],
+  ];
+  // flex of every key, used to line up Up / Down between rows of different widths.
+  static const List<List<int>> _flex = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 4, 2, 2],
+  ];
+  FocusNode get _firstKey => _nodes[0][0];
   EditableTextState? _target;
   FocusNode? _dismissedFor;
   bool _visible = false;
@@ -35,7 +51,12 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
   void dispose() {
     FocusManager.instance.removeListener(_onFocus);
     _scope.dispose();
-    _firstKey.dispose();
+    for (final r in _nodes) {
+      for (final n in r) {
+        n.dispose();
+      }
+    }
+    TvKeyboardHost.visibleNotifier.value = false;
     super.dispose();
   }
 
@@ -64,6 +85,7 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
           _target = et;
           _visible = true;
         });
+        TvKeyboardHost.visibleNotifier.value = true;
       }
       // Hand the remote over to the keys.
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -73,6 +95,7 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     }
     if (_visible && !_scope.hasFocus) {
       setState(() => _visible = false);
+      TvKeyboardHost.visibleNotifier.value = false;
     }
     if (pf != null && !identical(pf, _dismissedFor)) _dismissedFor = null;
   }
@@ -108,6 +131,7 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     final et = _target;
     final node = et?.widget.focusNode;
     setState(() => _visible = false);
+    TvKeyboardHost.visibleNotifier.value = false;
     _dismissedFor = node;
     try {
       et?.performAction(et.widget.textInputAction ?? TextInputAction.done);
@@ -116,59 +140,110 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     node?.nextFocus();
   }
 
-  Widget _key(String label, VoidCallback onTap, {int flex = 1, FocusNode? node, IconData? icon, bool strong = false}) {
+  Widget _key(int r, int c, String label, VoidCallback onTap, {IconData? icon, bool strong = false}) {
     return Expanded(
-      flex: flex,
-      child: _KbKey(label: label, icon: icon, strong: strong, node: node, onTap: onTap),
+      flex: _flex[r][c],
+      child: _KbKey(label: label, icon: icon, strong: strong, node: _nodes[r][c], onTap: onTap),
     );
   }
 
-  List<Widget> _letters(String chars, {FocusNode? first}) {
+  List<Widget> _letters(int r, int from, String chars) {
     final out = <Widget>[];
     for (int i = 0; i < chars.length; i++) {
-      final c = _caps ? chars[i].toUpperCase() : chars[i];
-      out.add(_key(c, () => _type(c), node: i == 0 ? first : null));
+      final ch = _caps ? chars[i].toUpperCase() : chars[i];
+      out.add(_key(r, from + i, ch, () => _type(ch)));
     }
     return out;
   }
 
-  Widget _panel() {
-    return Focus(
-      focusNode: _scope,
-      onKeyEvent: (n, e) {
-        if (e is KeyDownEvent && (e.logicalKey == LogicalKeyboardKey.goBack || e.logicalKey == LogicalKeyboardKey.escape)) {
-          _done();
-          return KeyEventResult.handled;
+  /// Arrow keys move over the keys by position (row / column), nothing else.
+  KeyEventResult _arrow(FocusNode n, KeyEvent e) {
+    if (e is KeyUpEvent) return KeyEventResult.ignored;
+    final k = e.logicalKey;
+    if (k == LogicalKeyboardKey.goBack || k == LogicalKeyboardKey.escape) {
+      if (e is KeyDownEvent) _done();
+      return KeyEventResult.handled;
+    }
+    final isArrow = k == LogicalKeyboardKey.arrowLeft || k == LogicalKeyboardKey.arrowRight || k == LogicalKeyboardKey.arrowUp || k == LogicalKeyboardKey.arrowDown;
+    if (!isArrow) return KeyEventResult.ignored;
+    int r = -1, c = -1;
+    for (int i = 0; i < _nodes.length; i++) {
+      for (int j = 0; j < _nodes[i].length; j++) {
+        if (_nodes[i][j].hasPrimaryFocus) {
+          r = i;
+          c = j;
         }
-        return KeyEventResult.ignored;
-      },
-      child: Material(
-        color: const Color(0xF2120E24),
-        elevation: 16,
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Row(children: _letters('1234567890', first: _firstKey)),
-              Row(children: _letters('qwertyuiop')),
-              Row(children: [..._letters('asdfghjkl'), _key('', _backspace, icon: Icons.backspace_outlined)]),
-              Row(children: [
-                _key('', () => setState(() => _caps = !_caps), icon: _caps ? Icons.keyboard_capslock : Icons.arrow_upward),
-                ..._letters('zxcvbnm'),
-                _key('.', () => _type('.')),
-                _key('/', () => _type('/')),
+      }
+    }
+    if (r < 0) {
+      _firstKey.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowLeft) {
+      if (c > 0) _nodes[r][c - 1].requestFocus();
+    } else if (k == LogicalKeyboardKey.arrowRight) {
+      if (c < _nodes[r].length - 1) _nodes[r][c + 1].requestFocus();
+    } else {
+      final nr = k == LogicalKeyboardKey.arrowUp ? r - 1 : r + 1;
+      if (nr >= 0 && nr < _nodes.length) {
+        // Same horizontal position in the other row.
+        double total(List<int> f) => f.fold<int>(0, (a, b) => a + b).toDouble();
+        double centre(int row, int col) {
+          double acc = 0;
+          for (int i = 0; i < col; i++) {
+            acc += _flex[row][i];
+          }
+          return (acc + _flex[row][col] / 2) / total(_flex[row]);
+        }
+        final want = centre(r, c);
+        int best = 0;
+        double bestD = 9;
+        for (int j = 0; j < _nodes[nr].length; j++) {
+          final d = (centre(nr, j) - want).abs();
+          if (d < bestD) {
+            bestD = d;
+            best = j;
+          }
+        }
+        _nodes[nr][best].requestFocus();
+      }
+    }
+    return KeyEventResult.handled;
+  }
+
+  Widget _panel() {
+    return FocusScope(
+      child: Focus(
+        focusNode: _scope,
+        onKeyEvent: _arrow,
+        child: Material(
+          color: const Color(0xF2120E24),
+          elevation: 16,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Row(children: _letters(0, 0, '1234567890')),
+                Row(children: _letters(1, 0, 'qwertyuiop')),
+                Row(children: [..._letters(2, 0, 'asdfghjkl'), _key(2, 9, '', _backspace, icon: Icons.backspace_outlined)]),
+                Row(children: [
+                  _key(3, 0, '', () => setState(() => _caps = !_caps), icon: _caps ? Icons.keyboard_capslock : Icons.arrow_upward),
+                  ..._letters(3, 1, 'zxcvbnm'),
+                  _key(3, 8, '.', () => _type('.')),
+                  _key(3, 9, '/', () => _type('/')),
+                ]),
+                Row(children: [
+                  _key(4, 0, ':', () => _type(':')),
+                  _key(4, 1, '-', () => _type('-')),
+                  _key(4, 2, '_', () => _type('_')),
+                  _key(4, 3, '@', () => _type('@')),
+                  _key(4, 4, 'Space', () => _type(' ')),
+                  _key(4, 5, 'Clear', _clear),
+                  _key(4, 6, 'Done', _done, strong: true),
+                ]),
               ]),
-              Row(children: [
-                _key(':', () => _type(':')),
-                _key('-', () => _type('-')),
-                _key('_', () => _type('_')),
-                _key('@', () => _type('@')),
-                _key('Space', () => _type(' '), flex: 4),
-                _key('Clear', _clear, flex: 2),
-                _key('Done', _done, flex: 2, strong: true),
-              ]),
-            ]),
+            ),
           ),
         ),
       ),
