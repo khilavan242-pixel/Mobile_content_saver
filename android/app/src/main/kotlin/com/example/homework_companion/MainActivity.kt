@@ -97,29 +97,35 @@ class MainActivity : FlutterActivity() {
     }
 
     // Keep the web player alive (audio) while the app is in the background.
+    // Android tells the WebView its window is hidden when the app stops, and
+    // YouTube then silences the sound. Telling it "visible" again keeps it playing.
+    private var stopped = false
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (!stopped) return
+            wake(window?.decorView)
+            window?.decorView?.postDelayed(this, 700)
+        }
+    }
+
     private fun wake(v: View?) {
         if (v is WebView) {
             v.onResume()
             v.resumeTimers()
+            v.dispatchWindowVisibilityChanged(View.VISIBLE)
         } else if (v is ViewGroup) {
             for (i in 0 until v.childCount) wake(v.getChildAt(i))
         }
     }
 
-    private fun keepWebAlive() {
-        val root = window?.decorView
-        wake(root)
-        root?.postDelayed({ wake(window?.decorView) }, 400)
-        root?.postDelayed({ wake(window?.decorView) }, 1500)
-    }
-
-    override fun onPause() {
-        super.onPause()
-        keepWebAlive()
-    }
-
     override fun onStop() {
         super.onStop()
-        keepWebAlive()
+        stopped = true
+        window?.decorView?.post(ticker)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        stopped = false
     }
 }

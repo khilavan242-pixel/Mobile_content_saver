@@ -53,6 +53,7 @@ class PlaybackService : Service() {
             override fun onSkipToNext() { send("next") }
             override fun onSkipToPrevious() { send("prev") }
             override fun onStop() { send("close") }
+            override fun onCustomAction(action: String, extras: android.os.Bundle?) { if (action == "close") send("close") }
         })
         s.isActive = true
         session = s
@@ -110,6 +111,7 @@ class PlaybackService : Service() {
         s.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(actions)
+                .addCustomAction(PlaybackState.CustomAction.Builder("close", "Close", android.R.drawable.ic_menu_close_clear_cancel).build())
                 .setState(if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
                 .build()
         )
