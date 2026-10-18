@@ -134,6 +134,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Closing the floating (system) window with its X leaves the app stopped but in
+        // picture-in-picture mode: that means "close TubeBox", not "keep playing".
+        if (Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode &&
+            (getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager).isInteractive) {
+            stopService(Intent(this, PlaybackService::class.java))
+            finishAndRemoveTask()
+            window?.decorView?.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 300)
+            return
+        }
         stopped = true
         window?.decorView?.post(ticker)
     }
