@@ -56,6 +56,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _browse = false; // TV: "Up next" rows are open
   bool _settingsOpen = false;
   final GlobalKey _webKey = GlobalKey(debugLabel: 'player-web');
+  Timer? _keepAlive; // restarts playback while the app is in the background
   bool _wantPlay = true; // false only when the user paused on purpose
   DateTime _lastShift = DateTime.now();
   AppLifecycleState _app = AppLifecycleState.resumed;
@@ -118,6 +119,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (mounted && !widget.minimized) _root.requestFocus();
     });
     _checkShort();
+    _keepAlive = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      if (!mounted || !_wantPlay || !_ready || _ended || _errorCode != null) return;
+      if (_app != AppLifecycleState.resumed && !widget.inPip) _js('player.playVideo()');
+    });
   }
 
   @override
@@ -231,6 +236,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   @override
   void dispose() {
+    _keepAlive?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     Media.release(_onMediaCmd);
     if (PlayerHost.instance.backHandler == _handleBack) PlayerHost.instance.backHandler = null;
