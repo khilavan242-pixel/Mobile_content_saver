@@ -73,6 +73,12 @@ class MainActivity : FlutterActivity() {
                     PlaybackService.instance?.progress(pos, dur, playing)
                     result.success(true)
                 }
+                "quit" -> {
+                    stopService(Intent(this, PlaybackService::class.java))
+                    result.success(true)
+                    finishAndRemoveTask()
+                    window?.decorView?.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 400)
+                }
                 "stop" -> {
                     stopService(Intent(this, PlaybackService::class.java))
                     result.success(true)
