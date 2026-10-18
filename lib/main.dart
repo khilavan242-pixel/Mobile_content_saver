@@ -552,7 +552,9 @@ class _HomeShellState extends State<HomeShell> {
       color: kBg,
       child: SafeArea(
         top: false,
-        child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        child: SizedBox(
+          height: 64,
+          child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
           _barItem(Icons.home_outlined, Icons.home, 'Home', _index == 0, () => _go(0)),
           _barItem(Icons.search, Icons.search, 'Search', false, () {
             _go(0);
@@ -577,6 +579,7 @@ class _HomeShellState extends State<HomeShell> {
           _barItem(Icons.cast_connected_outlined, Icons.cast_connected, 'TV', _index == 1, () => _go(1)),
           _barItem(Icons.menu, Icons.menu, 'Menu', false, _openMenu),
         ]),
+        ),
       ),
     );
   }

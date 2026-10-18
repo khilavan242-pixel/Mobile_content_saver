@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'tv_focus.dart';
 
 /// On-screen keyboard for Android TV that the remote can move around.
 ///
@@ -120,17 +119,7 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
   Widget _key(String label, VoidCallback onTap, {int flex = 1, FocusNode? node, IconData? icon, bool strong = false}) {
     return Expanded(
       flex: flex,
-      child: TvFocusable(
-        focusNode: node,
-        radius: 8,
-        onTap: onTap,
-        child: Container(
-          height: 38,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(color: strong ? Theme.of(context).colorScheme.primary : Colors.white12, borderRadius: BorderRadius.circular(8)),
-          child: icon != null ? Icon(icon, size: 20) : Text(label, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-        ),
-      ),
+      child: _KbKey(label: label, icon: icon, strong: strong, node: node, onTap: onTap),
     );
   }
 
@@ -159,7 +148,7 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(60, 8, 60, 10),
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Row(children: _letters('1234567890', first: _firstKey)),
               Row(children: _letters('qwertyuiop')),
@@ -192,7 +181,55 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     _isTv = size.width >= 900 && size.width > size.height;
     return Stack(children: [
       Positioned.fill(child: widget.child),
-      if (_isTv && _visible) Positioned(left: 0, right: 0, bottom: 0, child: _panel()),
+      if (_isTv && _visible)
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 520), child: ClipRRect(borderRadius: const BorderRadius.vertical(top: Radius.circular(14)), child: _panel()))),
+        ),
     ]);
+  }
+}
+
+/// One compact key: a thin white ring shows where the remote is.
+class _KbKey extends StatefulWidget {
+  final String label;
+  final IconData? icon;
+  final bool strong;
+  final FocusNode? node;
+  final VoidCallback onTap;
+  const _KbKey({Key? key, required this.label, this.icon, this.strong = false, this.node, required this.onTap}) : super(key: key);
+
+  @override
+  State<_KbKey> createState() => _KbKeyState();
+}
+
+class _KbKeyState extends State<_KbKey> {
+  bool _f = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.all(1.5),
+      child: InkWell(
+        focusNode: widget.node,
+        borderRadius: BorderRadius.circular(6),
+        onTap: widget.onTap,
+        onFocusChange: (v) => setState(() => _f = v),
+        child: Container(
+          height: 30,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: _f ? Colors.white : (widget.strong ? primary : Colors.white12),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: widget.icon != null
+              ? Icon(widget.icon, size: 16, color: _f ? Colors.black : Colors.white)
+              : Text(widget.label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: _f ? Colors.black : Colors.white)),
+        ),
+      ),
+    );
   }
 }

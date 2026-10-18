@@ -57,6 +57,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _browse = false; // TV: "Up next" rows are open
   bool _settingsOpen = false;
   final GlobalKey _webKey = GlobalKey(debugLabel: 'player-web');
+  DateTime _lastGo = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastProgress = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _keepAlive; // restarts playback while the app is in the background
   bool _wantPlay = true; // false only when the user paused on purpose
@@ -506,7 +507,8 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           return;
         }
         setState(() => _playing = false);
-        _showControls();
+        // A new video often reports "paused" while it loads: keep the screen clean.
+        if (DateTime.now().difference(_lastGo) > const Duration(seconds: 6)) _showControls();
         _syncPipAuto();
       } else if (st == 0) {
         _onEnded();
@@ -541,6 +543,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
   void _go(int i, {bool fromList = false}) {
     if (i < 0 || i >= widget.queue.length) return;
     _skipTimer?.cancel();
+    _lastGo = DateTime.now();
     setState(() {
       _index = i;
       _errorCode = null;
