@@ -23,6 +23,26 @@ class PlayerHost extends ChangeNotifier {
   bool minimized = false;
   bool inPip = false;
 
+  /// Audio mode shrinks into a bar; video shrinks into a draggable window.
+  bool audioMode = false;
+  Offset? miniPos; // top-left of the floating window (null = default corner)
+  static const double miniW = 232, miniH = 131;
+
+  void setAudioMode(bool v) {
+    if (audioMode == v) return;
+    audioMode = v;
+    notifyListeners();
+  }
+
+  void dragMini(Offset d, Size screen, EdgeInsets pad) {
+    final cur = miniPos ?? Offset(screen.width - miniW - 12, screen.height - miniH - pad.bottom - 90);
+    miniPos = Offset(
+      (cur.dx + d.dx).clamp(4.0, screen.width - miniW - 4).toDouble(),
+      (cur.dy + d.dy).clamp(pad.top + 4, screen.height - miniH - pad.bottom - 4).toDouble(),
+    );
+    notifyListeners();
+  }
+
   /// Set by the open player: handles the Back key, returns true when used.
   bool Function()? backHandler;
 
@@ -51,6 +71,7 @@ class PlayerHost extends ChangeNotifier {
     if (!active) return;
     active = false;
     minimized = false;
+    audioMode = false;
     session++;
     notifyListeners();
   }
@@ -83,15 +104,20 @@ class _PlayerLayerState extends State<PlayerLayer> {
       builder: (context, _) {
         final full = _host.active && (!_host.minimized || _host.inPip);
         final mini = _host.active && _host.minimized && !_host.inPip;
+        final bar = mini && _host.audioMode;
+        final win = mini && !_host.audioMode;
+        final size = mq.size;
+        final pos = _host.miniPos ?? Offset(size.width - PlayerHost.miniW - 12, size.height - PlayerHost.miniH - mq.padding.bottom - 90);
         return Stack(children: [
           Positioned.fill(child: ExcludeFocus(excluding: full, child: widget.child)),
           if (_host.active)
             Positioned(
-              left: mini ? 8 : 0,
-              right: mini ? 8 : 0,
-              top: mini ? null : 0,
-              bottom: mini ? mq.padding.bottom + 84 : 0,
-              height: mini ? 66 : null,
+              left: win ? pos.dx : (bar ? 8 : 0),
+              right: win ? null : (bar ? 8 : 0),
+              top: win ? pos.dy : (bar ? null : 0),
+              bottom: win ? null : (bar ? mq.padding.bottom + 84 : 0),
+              width: win ? PlayerHost.miniW : null,
+              height: win ? PlayerHost.miniH : (bar ? 66 : null),
               child: const _PlayerOverlay(),
             ),
         ]);

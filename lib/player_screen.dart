@@ -62,6 +62,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _short = false; // current video is a YouTube Short
   bool _fill = false; // zoom to fill the screen (pinch out)
   bool _audio = false; // MP3-player style audio mode
+  bool _queueEdit = false; // phone: drag-to-order mode for Up next
+  int _cardMenu = -1; // phone: Up next card whose options are open
   bool _blackout = false; // black screen while listening
   String _settingsPage = 'main'; // main | quality | speed
   List<String> _qualities = [];
@@ -318,7 +320,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   /// Pressing Home while a video plays turns it into the floating mini player.
   void _syncPipAuto() {
-    Pip.auto(_playing && !_wide && _errorCode == null, wide: !_shortUi);
+    // Audio mode plays under the notification (never as a floating window).
+    Pip.auto(_playing && !_wide && !_audio && _errorCode == null, wide: !_shortUi);
     // Media notification: lock screen / headset / notification buttons.
     Media.show(
       title: _current.hasRealTitle ? _current.plainTitle : 'YouTube video',
@@ -339,6 +342,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   void _setAudio(bool on) {
     setState(() {
       _audio = on;
+      PlayerHost.instance.audioMode = on;
       _blackout = false;
       _settingsOpen = false;
     });
@@ -1078,6 +1082,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         top: 2,
         right: 2,
         child: Row(children: [
+          _autoPill(),
           IconButton(
             tooltip: 'Captions',
             onPressed: _toggleCaptions,
@@ -1204,7 +1209,6 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           _closeSettings();
         }),
         if (!_wide) _settingsRow(_audio ? Icons.videocam_outlined : Icons.headphones, _audio ? 'Video mode' : 'Audio mode (MP3 player)', onTap: () => _setAudio(!_audio)),
-        if (!_wide) _settingsRow(Icons.picture_in_picture_alt_outlined, 'Floating window (over other apps)', onTap: _enterPip),
         _settingsRow(Icons.open_in_new, 'Open in YouTube app', onTap: () {
           _closeSettings();
           _openInYouTube();
@@ -1592,48 +1596,229 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         ),
         const SizedBox(height: 10),
         if (_errorCode != null) ...[_errorCard(), const SizedBox(height: 10)],
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _actionTile(Icons.smart_display, const Color(0xFFE53935), 'YouTube', _openInYouTube),
-          _actionTile(Icons.headphones, const Color(0xFFFF8F00), 'Audio', () => _setAudio(true)),
-          _actionTile(Icons.picture_in_picture_alt, const Color(0xFF1E88E5), 'Float', _enterPip),
-          _actionTile(Icons.playlist_play, const Color(0xFF43A047), _autoNext ? 'Autoplay' : 'Autoplay off', () => setState(() => _autoNext = !_autoNext), on: _autoNext),
+        Row(children: [
+          if (widget.queue.length > 1)
+            const Text('Up next', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
+          const Spacer(),
+          if (widget.queue.length > 2)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _chipBtn(_queueEdit ? Icons.check : Icons.swap_vert, _queueEdit ? 'Done' : 'Order', () => setState(() {
+                _queueEdit = !_queueEdit;
+                _cardMenu = -1;
+              })),
+            ),
+          _chipBtn(Icons.headphones, 'Audio', () => _setAudio(true)),
         ]),
         if (widget.queue.length > 1) ...[
-          const SizedBox(height: 18),
-          const Text('Up next', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-          const SizedBox(height: 6),
-          for (int i = 0; i < widget.queue.length; i++)
-            TvFocusable(
-              onTap: () => _go(i),
-              child: Container(
-                color: i == _index ? Theme.of(context).colorScheme.primary.withOpacity(0.25) : null,
-                padding: const EdgeInsets.all(4),
-                child: Row(children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: Image.network(
-                      widget.queue[i].thumbUrl,
-                      width: 96,
-                      height: 54,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const SizedBox(width: 96, height: 54),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      widget.queue[i].hasRealTitle ? widget.queue[i].plainTitle : 'YouTube video',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontWeight: i == _index ? FontWeight.w700 : FontWeight.w400),
-                    ),
-                  ),
-                ]),
-              ),
-            ),
+          const SizedBox(height: 10),
+          if (_queueEdit) ..._orderList() else ..._cardList(),
         ],
       ],
     );
+  }
+
+  /// Small, quiet pill button (same look for Audio / Order).
+  Widget _chipBtn(IconData icon, String label, VoidCallback onTap) {
+    return Material(
+      color: Colors.white10,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 17, color: Colors.white70),
+            const SizedBox(width: 6),
+            Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white70)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  /// YouTube style "Auto-play" switch shown on the video next to CC / settings.
+  Widget _autoPill() {
+    return Tooltip(
+      message: _autoNext ? 'Auto-play is on' : 'Auto-play is off',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () {
+          setState(() => _autoNext = !_autoNext);
+          _flashText(_autoNext ? 'Auto-play is on' : 'Auto-play is off');
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: 36,
+            height: 18,
+            padding: const EdgeInsets.all(2),
+            alignment: _autoNext ? Alignment.centerRight : Alignment.centerLeft,
+            decoration: BoxDecoration(
+              color: _autoNext ? Colors.white70 : Colors.white24,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Container(
+              width: 14,
+              height: 14,
+              decoration: const BoxDecoration(color: Colors.black87, shape: BoxShape.circle),
+              child: Icon(_autoNext ? Icons.play_arrow : Icons.pause, size: 10, color: Colors.white),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- queue editing (changes only what plays next, not the saved .m3u file)
+  void _qMove(int from, int to) {
+    final q = widget.queue;
+    if (from < 0 || from >= q.length || to < 0 || to >= q.length || from == to) return;
+    final cur = q[_index];
+    final it = q.removeAt(from);
+    q.insert(to, it);
+    setState(() => _index = q.indexOf(cur));
+    _syncPipAuto();
+  }
+
+  void _qRemove(int i) {
+    final q = widget.queue;
+    if (i == _index || i < 0 || i >= q.length) return;
+    q.removeAt(i);
+    setState(() {
+      if (i < _index) _index--;
+      _cardMenu = -1;
+    });
+    _syncPipAuto();
+  }
+
+  String _cardTitle(YtItem it) => it.hasRealTitle ? it.plainTitle : 'YouTube ${it.isPlaylist ? 'playlist' : 'video'}';
+
+  Widget _bigCard(int i, String badge) {
+    final it = widget.queue[i];
+    final current = i == _index;
+    final primary = Theme.of(context).colorScheme.primary;
+    final menuOpen = _cardMenu == i;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        InkWell(
+          onTap: current ? null : () => _go(i),
+          child: Stack(children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.network(it.thumbUrl, fit: BoxFit.cover, width: double.infinity, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.white10)),
+              ),
+            ),
+            Positioned(
+              left: 8,
+              top: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: current ? primary : Colors.black87, borderRadius: BorderRadius.circular(6)),
+                child: Text(current ? 'Now playing' : badge, style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 8, left: 2),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+              child: GestureDetector(
+                onTap: current ? null : () => _go(i),
+                child: Text(_cardTitle(it), maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, height: 1.25)),
+              ),
+            ),
+            if (!current)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Options',
+                onPressed: () => setState(() => _cardMenu = menuOpen ? -1 : i),
+                icon: const Icon(Icons.more_vert, size: 22),
+              ),
+          ]),
+        ),
+        if (menuOpen)
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            if (i != _index + 1) _chipBtn(Icons.vertical_align_top, 'Play next', () {
+              _qMove(i, i > _index ? _index + 1 : _index);
+              setState(() => _cardMenu = -1);
+              _flashText('Will play next');
+            }),
+            if (i > _index + 1) _chipBtn(Icons.arrow_upward, 'Move up', () {
+              _qMove(i, i - 1);
+              setState(() => _cardMenu = i - 1);
+            }),
+            if (i > _index && i < widget.queue.length - 1) _chipBtn(Icons.arrow_downward, 'Move down', () {
+              _qMove(i, i + 1);
+              setState(() => _cardMenu = i + 1);
+            }),
+            if (i > _index) _chipBtn(Icons.vertical_align_bottom, 'Play last', () {
+              _qMove(i, widget.queue.length - 1);
+              setState(() => _cardMenu = -1);
+            }),
+            _chipBtn(Icons.close, 'Remove', () => _qRemove(i)),
+          ]),
+      ]),
+    );
+  }
+
+  List<Widget> _cardList() {
+    final n = widget.queue.length;
+    return [
+      _bigCard(_index, ''),
+      for (int i = _index + 1; i < n; i++) _bigCard(i, 'Next #${i - _index}'),
+      if (_index > 0) ...[
+        const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Played earlier', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: Colors.white70))),
+        for (int i = 0; i < _index; i++) _bigCard(i, 'Earlier'),
+      ],
+    ];
+  }
+
+  /// Compact drag-to-reorder list of the upcoming videos.
+  List<Widget> _orderList() {
+    final start = _index + 1;
+    final count = widget.queue.length - start;
+    if (count <= 0) return [const Padding(padding: EdgeInsets.all(12), child: Text('No upcoming videos.', style: TextStyle(color: Colors.white54)))];
+    return [
+      const Padding(padding: EdgeInsets.only(bottom: 8), child: Text('Hold the handle and drag to set the order. The top one plays next.', style: TextStyle(fontSize: 12.5, color: Colors.white54))),
+      ReorderableListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        buildDefaultDragHandles: false,
+        itemCount: count,
+        onReorder: (o, n) {
+          if (n > o) n--;
+          _qMove(start + o, start + n);
+        },
+        itemBuilder: (context, k) {
+          final it = widget.queue[start + k];
+          return Container(
+            key: ObjectKey(it),
+            margin: const EdgeInsets.only(bottom: 6),
+            decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(10)),
+            padding: const EdgeInsets.all(6),
+            child: Row(children: [
+              SizedBox(width: 22, child: Text('${k + 1}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54, fontWeight: FontWeight.w700))),
+              const SizedBox(width: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Image.network(it.thumbUrl, width: 96, height: 54, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox(width: 96, height: 54)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: Text(_cardTitle(it), maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5))),
+              IconButton(visualDensity: VisualDensity.compact, tooltip: 'Remove', onPressed: () => _qRemove(start + k), icon: const Icon(Icons.close, size: 20)),
+              ReorderableDragStartListener(index: k, child: const Padding(padding: EdgeInsets.all(8), child: Icon(Icons.drag_handle, color: Colors.white70))),
+            ]),
+          );
+        },
+      ),
+    ];
   }
 
   // -------------------------------------------------------------- audio mode
@@ -1776,6 +1961,72 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     ]);
   }
 
+  /// Small floating video window: drag it anywhere, tap to enlarge.
+  Widget _miniWindow() {
+    final host = PlayerHost.instance;
+    final mq = MediaQuery.of(context);
+    return Material(
+      color: Colors.black,
+      elevation: 12,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: Stack(fit: StackFit.expand, children: [
+        _video(bare: true),
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: host.expand,
+            onPanUpdate: (d) => host.dragMini(d.delta, mq.size, mq.padding),
+            child: const SizedBox.expand(),
+          ),
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: ValueListenableBuilder<double>(
+            valueListenable: _dur,
+            builder: (context, dur, _) => ValueListenableBuilder<double>(
+              valueListenable: _pos,
+              builder: (context, pos, __) => LinearProgressIndicator(
+                value: dur > 0 ? (pos / dur).clamp(0.0, 1.0).toDouble() : 0,
+                minHeight: 2.5,
+                backgroundColor: Colors.white24,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          top: 0,
+          right: 0,
+          child: _miniBtn(Icons.close, host.close),
+        ),
+        Positioned(
+          top: 0,
+          left: 0,
+          child: _miniBtn(Icons.open_in_full, host.expand),
+        ),
+        Center(child: _miniBtn(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow), _ended ? _replay : _togglePlay, big: true)),
+      ]),
+    );
+  }
+
+  Widget _miniBtn(IconData icon, VoidCallback onTap, {bool big = false}) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Container(
+          padding: EdgeInsets.all(big ? 8 : 4),
+          decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+          child: Icon(icon, size: big ? 26 : 16, color: Colors.white),
+        ),
+      ),
+    );
+  }
+
   /// The little bar shown at the bottom while you browse the app.
   Widget _miniBar() {
     final it = _current;
@@ -1843,7 +2094,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       focusNode: _root,
       autofocus: true,
       onKeyEvent: _onKey,
-      child: (widget.minimized && !_inPip) ? _miniBar() : Scaffold(backgroundColor: Colors.black, body: _body()),
+      child: (widget.minimized && !_inPip) ? (_audio ? _miniBar() : _miniWindow()) : Scaffold(backgroundColor: Colors.black, body: _body()),
     );
   }
 }
