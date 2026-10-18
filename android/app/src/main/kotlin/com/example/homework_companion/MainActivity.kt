@@ -51,18 +51,26 @@ class MainActivity : FlutterActivity() {
                     val playing = call.argument<Boolean>("playing") ?: true
                     val prev = call.argument<Boolean>("prev") ?: false
                     val next = call.argument<Boolean>("next") ?: false
+                    val art = call.argument<String>("art") ?: ""
                     val svc = PlaybackService.instance
                     if (svc != null) {
-                        svc.update(t, sub, playing, prev, next)
+                        svc.update(t, sub, playing, prev, next, art)
                     } else {
                         val i = Intent(this, PlaybackService::class.java)
                             .putExtra("title", t).putExtra("subtitle", sub)
-                            .putExtra("playing", playing).putExtra("prev", prev).putExtra("next", next)
+                            .putExtra("playing", playing).putExtra("prev", prev).putExtra("next", next).putExtra("art", art)
                         try {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
                         } catch (e: Exception) {
                         }
                     }
+                    result.success(true)
+                }
+                "progress" -> {
+                    val pos = (call.argument<Number>("pos") ?: 0).toLong()
+                    val dur = (call.argument<Number>("dur") ?: 0).toLong()
+                    val playing = call.argument<Boolean>("playing") ?: true
+                    PlaybackService.instance?.progress(pos, dur, playing)
                     result.success(true)
                 }
                 "stop" -> {

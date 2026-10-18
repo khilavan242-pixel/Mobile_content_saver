@@ -14,6 +14,9 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import java.net.URL
 
 /// Foreground "media playback" service: keeps TubeBox alive in the background
 /// and shows a media notification (lock screen + headset buttons too).
@@ -35,6 +38,10 @@ class PlaybackService : Service() {
     private var hasPrev = false
     private var hasNext = false
     private var started = false
+    private var posMs = 0L
+    private var durMs = 0L
+    private var artUrl = ""
+    @Volatile private var art: Bitmap? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -53,6 +60,7 @@ class PlaybackService : Service() {
             override fun onSkipToNext() { send("next") }
             override fun onSkipToPrevious() { send("prev") }
             override fun onStop() { send("close") }
+            override fun onSeekTo(pos: Long) { posMs = pos; send("seek:$pos") }
             override fun onCustomAction(action: String, extras: android.os.Bundle?) { if (action == "close") send("close") }
         })
         s.isActive = true
@@ -75,18 +83,67 @@ class PlaybackService : Service() {
             playing = intent.getBooleanExtra("playing", playing)
             hasPrev = intent.getBooleanExtra("prev", hasPrev)
             hasNext = intent.getBooleanExtra("next", hasNext)
+            val a = intent.getStringExtra("art") ?: ""
+            if (a.isNotEmpty() && a != artUrl) update(title, subtitle, playing, hasPrev, hasNext, a)
         }
         refresh()
         return START_NOT_STICKY
     }
 
-    fun update(t: String, s: String, p: Boolean, prev: Boolean, next: Boolean) {
+    fun update(t: String, s: String, p: Boolean, prev: Boolean, next: Boolean, artwork: String = "") {
+        if (t != title) { posMs = 0L; durMs = 0L }
+        if (artwork != artUrl) {
+            artUrl = artwork
+            art = null
+            if (artwork.isNotEmpty()) {
+                Thread {
+                    try {
+                        val bmp = BitmapFactory.decodeStream(URL(artwork).openStream())
+                        if (bmp != null && artUrl == artwork) { art = bmp; refresh() }
+                    } catch (_: Exception) {}
+                }.start()
+            }
+        }
         title = t
         subtitle = s
         playing = p
         hasPrev = prev
         hasNext = next
         refresh()
+    }
+
+    /// Light update: only the timeline (position / length) and play state.
+    fun progress(pos: Long, dur: Long, p: Boolean) {
+        val durChanged = dur != durMs
+        posMs = pos
+        durMs = dur
+        playing = p
+        if (durChanged) pushMetadata()
+        pushState()
+    }
+
+    private fun pushMetadata() {
+        val s = session ?: return
+        val mb = MediaMetadata.Builder()
+            .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle)
+        if (durMs > 0) mb.putLong(MediaMetadata.METADATA_KEY_DURATION, durMs)
+        art?.let { mb.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+        s.setMetadata(mb.build())
+    }
+
+    private fun pushState() {
+        val s = session ?: return
+        val actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or
+            PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS or PlaybackState.ACTION_STOP or
+            PlaybackState.ACTION_SEEK_TO
+        s.setPlaybackState(
+            PlaybackState.Builder()
+                .setActions(actions)
+                .addCustomAction(PlaybackState.CustomAction.Builder("close", "Close", android.R.drawable.ic_menu_close_clear_cancel).build())
+                .setState(if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, if (durMs > 0) posMs else PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+                .build()
+        )
     }
 
     private fun send(cmd: String) {
@@ -100,21 +157,8 @@ class PlaybackService : Service() {
 
     private fun refresh() {
         val s = session ?: return
-        s.setMetadata(
-            MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle)
-                .build()
-        )
-        val actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or
-            PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS or PlaybackState.ACTION_STOP
-        s.setPlaybackState(
-            PlaybackState.Builder()
-                .setActions(actions)
-                .addCustomAction(PlaybackState.CustomAction.Builder("close", "Close", android.R.drawable.ic_menu_close_clear_cancel).build())
-                .setState(if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
-                .build()
-        )
+        pushMetadata()
+        pushState()
 
         val open = PendingIntent.getActivity(
             this, 0,
@@ -126,6 +170,7 @@ class PlaybackService : Service() {
             .setContentTitle(title)
             .setContentText(subtitle)
             .setContentIntent(open)
+            .setLargeIcon(art)
             .setOngoing(playing)
             .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
