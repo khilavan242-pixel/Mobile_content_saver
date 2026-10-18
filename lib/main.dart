@@ -8,8 +8,10 @@ import 'package:permission_handler/permission_handler.dart';
 import 'prefs.dart';
 
 import 'm3u_files.dart';
+import 'media.dart';
 import 'm3u_store.dart';
 import 'player_host.dart';
+import 'tv_keyboard.dart';
 import 'tv_sync.dart';
 
 const Color kAccent = Color(0xFF8B5CF6); // violet, matches the app icon
@@ -94,7 +96,7 @@ class TubeBoxApp extends StatelessWidget {
       title: 'TubeBox',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
-      builder: (context, child) => PlayerLayer(child: child ?? const SizedBox.shrink()),
+      builder: (context, child) => TvKeyboardHost(child: PlayerLayer(child: child ?? const SizedBox.shrink())),
       home: const StartupGate(),
     );
   }
@@ -372,6 +374,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   final ValueNotifier<bool> _navVisible = ValueNotifier<bool>(true);
+  final ValueNotifier<int> _addRequest = ValueNotifier<int>(0);
   final ValueNotifier<int> _searchRequest = ValueNotifier<int>(0);
   // TV side menu buttons: 0 search, 1 home, 2 TV sync, 3 folder.
   final List<FocusNode> _railNodes = List.generate(4, (i) => FocusNode(debugLabel: 'rail-$i'));
@@ -386,6 +389,7 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void dispose() {
     _navVisible.dispose();
+    _addRequest.dispose();
     _searchRequest.dispose();
     for (final n in _railNodes) {
       n.dispose();
@@ -444,6 +448,7 @@ class _HomeShellState extends State<HomeShell> {
         navVisible: _navVisible,
         onGoToTvSync: () => _go(1),
         searchRequest: _searchRequest,
+        addRequest: _addRequest,
         railInset: tv ? _kRailWidth : 0,
       ),
       TvSyncScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
@@ -518,17 +523,98 @@ class _HomeShellState extends State<HomeShell> {
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
           alignment: Alignment.topCenter,
-          child: visible
-              ? NavigationBar(
-                  selectedIndex: _index,
-                  onDestinationSelected: _go,
-                  destinations: const [
-                    NavigationDestination(icon: Icon(Icons.video_library_outlined), selectedIcon: Icon(Icons.video_library), label: 'M3U Files'),
-                    NavigationDestination(icon: Icon(Icons.cast_connected_outlined), selectedIcon: Icon(Icons.cast_connected), label: 'TV Sync'),
-                  ],
-                )
-              : const SizedBox(width: double.infinity),
+          child: visible ? _phoneBar() : const SizedBox(width: double.infinity),
         ),
+      ),
+    );
+  }
+
+  Widget _barItem(IconData icon, IconData active, String label, bool selected, VoidCallback onTap) {
+    final c = selected ? Colors.white : Colors.white70;
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(selected ? active : icon, color: c, size: 26),
+            const SizedBox(height: 3),
+            Text(label, style: TextStyle(color: c, fontSize: 11, fontWeight: selected ? FontWeight.w700 : FontWeight.w500)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  /// YouTube-like bottom bar: Home, Search, big +, TV, Menu (bottom right).
+  Widget _phoneBar() {
+    return Material(
+      color: kBg,
+      child: SafeArea(
+        top: false,
+        child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+          _barItem(Icons.home_outlined, Icons.home, 'Home', _index == 0, () => _go(0)),
+          _barItem(Icons.search, Icons.search, 'Search', false, () {
+            _go(0);
+            _searchRequest.value++;
+          }),
+          Expanded(
+            child: Center(
+              child: Material(
+                color: Colors.white12,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () {
+                    _go(0);
+                    _addRequest.value++;
+                  },
+                  child: const Padding(padding: EdgeInsets.all(12), child: Icon(Icons.add, size: 30)),
+                ),
+              ),
+            ),
+          ),
+          _barItem(Icons.cast_connected_outlined, Icons.cast_connected, 'TV', _index == 1, () => _go(1)),
+          _barItem(Icons.menu, Icons.menu, 'Menu', false, _openMenu),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _openMenu() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1633),
+      showDragHandle: true,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.folder_open),
+            title: const Text('Change folder'),
+            subtitle: Text(widget.basePath, maxLines: 1, overflow: TextOverflow.ellipsis),
+            onTap: () {
+              Navigator.pop(c);
+              widget.onChangeFolder();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.cast_connected),
+            title: const Text('TV Sync and Cast'),
+            subtitle: const Text('Send your lists to the TV, cast videos'),
+            onTap: () {
+              Navigator.pop(c);
+              _go(1);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.exit_to_app),
+            title: const Text('Exit TubeBox'),
+            onTap: () {
+              Navigator.pop(c);
+              Media.quit();
+            },
+          ),
+        ]),
       ),
     );
   }

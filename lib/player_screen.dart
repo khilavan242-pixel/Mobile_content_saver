@@ -192,7 +192,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         _go(_index - 1);
         break;
       case 'close':
-        PlayerHost.instance.close();
+        PlayerHost.instance.closeAndQuit();
         break;
     }
   }
@@ -481,7 +481,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       if ((code == 100 || code == 101 || code == 150) && _hasNext && _autoNext) {
         _skipTimer?.cancel();
         _skipTimer = Timer(const Duration(seconds: 4), () {
-          if (mounted && _errorCode != null) _go(_index + 1);
+          if (mounted && _errorCode != null) _go(_index + 1, fromList: _wide);
         });
       }
     } else if (m.startsWith('state:')) {
@@ -516,15 +516,15 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
 
   void _onEnded() {
     if (_current.isPlaylist) {
-      if (_hasNext && _autoNext) _go(_index + 1);
+      if (_hasNext && _autoNext) _go(_index + 1, fromList: _wide);
       return;
     }
     if (_repeat == 2) {
       _js('player.seekTo(0,true); player.playVideo();');
     } else if (_hasNext && _autoNext) {
-      _go(_index + 1);
+      _go(_index + 1, fromList: _wide);
     } else if (_repeat == 1 && _autoNext) {
-      _go(0);
+      _go(0, fromList: _wide);
     } else {
       _wantPlay = false;
       setState(() {
@@ -2055,7 +2055,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         Positioned(
           top: 0,
           right: 0,
-          child: _miniBtn(Icons.close, host.close),
+          child: _miniBtn(Icons.close, host.closeAndQuit),
         ),
         Positioned(
           top: 0,
@@ -2119,7 +2119,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             ),
             IconButton(tooltip: _playing ? 'Pause' : 'Play', onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
             if (_hasNext) IconButton(tooltip: 'Next', onPressed: () => _go(_index + 1), icon: const Icon(Icons.skip_next)),
-            IconButton(tooltip: 'Close', onPressed: PlayerHost.instance.close, icon: const Icon(Icons.close)),
+            IconButton(tooltip: 'Close', onPressed: PlayerHost.instance.closeAndQuit, icon: const Icon(Icons.close)),
           ]),
           Positioned(
             left: 0,

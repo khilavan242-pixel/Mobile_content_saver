@@ -42,6 +42,13 @@ class Media {
     } catch (_) {}
   }
 
+  /// Stops playback and closes TubeBox completely.
+  static Future<void> quit() async {
+    try {
+      await _c.invokeMethod('quit');
+    } catch (_) {}
+  }
+
   static Future<void> stop() async {
     try {
       await _c.invokeMethod('stop');

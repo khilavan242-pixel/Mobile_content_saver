@@ -45,6 +45,8 @@ class M3uFilesScreen extends StatefulWidget {
   final VoidCallback onGoToTvSync;
   /// TV: the side menu asks for the search box through this.
   final ValueNotifier<int>? searchRequest;
+  /// Phone: the bottom bar's "+" asks for the add-links sheet through this.
+  final ValueNotifier<int>? addRequest;
   /// TV: width taken by the collapsed side menu on the left.
   final double railInset;
   const M3uFilesScreen({
@@ -53,6 +55,7 @@ class M3uFilesScreen extends StatefulWidget {
     required this.navVisible,
     required this.onGoToTvSync,
     this.searchRequest,
+    this.addRequest,
     this.railInset = 0,
   }) : super(key: key);
 
@@ -91,7 +94,12 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     _store = YtStore(widget.basePath);
     WidgetsBinding.instance.addObserver(this);
     widget.searchRequest?.addListener(_onSearchRequest);
+    widget.addRequest?.addListener(_onAddRequest);
     _init();
+  }
+
+  void _onAddRequest() {
+    if (mounted && _ready) _showAddSheet();
   }
 
   void _onSearchRequest() {
@@ -101,6 +109,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   @override
   void dispose() {
     widget.searchRequest?.removeListener(_onSearchRequest);
+    widget.addRequest?.removeListener(_onAddRequest);
     WidgetsBinding.instance.removeObserver(this);
     _searchCtrl.dispose();
     super.dispose();
@@ -1604,7 +1613,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       floatingActionButton: ValueListenableBuilder<bool>(
         valueListenable: widget.navVisible,
         builder: (context, vis, _) => AnimatedScale(
-          scale: (vis && !selecting && _ready) ? 1 : 0,
+          scale: (vis && !selecting && _ready && widget.railInset > 0) ? 1 : 0,
           duration: const Duration(milliseconds: 180),
           child: FloatingActionButton.extended(
             onPressed: _showAddSheet,

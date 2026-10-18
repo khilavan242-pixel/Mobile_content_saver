@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'media.dart';
 import 'pip.dart';
 import 'player_screen.dart';
 import 'youtube_core.dart';
@@ -79,6 +80,12 @@ class PlayerHost extends ChangeNotifier {
     if (!active || !minimized) return;
     minimized = false;
     notifyListeners();
+  }
+
+  /// The X of the floating window / notification: stop everything and close the app.
+  void closeAndQuit() {
+    close();
+    Media.quit();
   }
 
   void close() {
