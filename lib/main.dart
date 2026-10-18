@@ -227,18 +227,12 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
         title: const Text('Choose where TubeBox keeps your .m3u files'),
         children: [
           for (final e in cands.entries)
-            SimpleDialogOption(
+            ListTile(
               autofocus: e.key == cands.keys.first,
-              onPressed: () => Navigator.pop(c, e.value),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(children: [
-                  const Icon(Icons.folder_outlined),
-                  const SizedBox(width: 14),
-                  Expanded(child: Text(e.key, style: const TextStyle(fontSize: 17))),
-                  Text(e.value, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                ]),
-              ),
+              leading: const Icon(Icons.folder_outlined),
+              title: Text(e.key, style: const TextStyle(fontSize: 17)),
+              subtitle: Text(e.value, style: const TextStyle(fontSize: 12)),
+              onTap: () => Navigator.pop(c, e.value),
             ),
         ],
       ),
