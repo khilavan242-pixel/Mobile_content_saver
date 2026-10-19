@@ -21,19 +21,20 @@ class TvKeyboardHost extends StatefulWidget {
 
 class _TvKeyboardHostState extends State<TvKeyboardHost> {
   final FocusNode _scope = FocusNode(debugLabel: 'tvKeyboard', canRequestFocus: false, skipTraversal: true);
-  // One focus node per key; rows are [10, 10, 10, 10, 7] keys.
-  static const List<int> _rowLens = [10, 10, 10, 10, 7];
+  // YouTube TV style keypad: rows of [8, 8, 8, 7, 3] keys, one focus node per key.
+  static const List<int> _rowLens = [8, 8, 8, 7, 3];
   final List<List<FocusNode>> _nodes = [
     for (final n in _rowLens) [for (int i = 0; i < n; i++) FocusNode(debugLabel: 'kb')],
   ];
-  // flex of every key, used to line up Up / Down between rows of different widths.
+  // flex of every key (rows have different widths); used to line up Up / Down.
   static const List<List<int>> _flex = [
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 4, 2, 2],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1],
+    [3, 2, 3],
   ];
+  bool _sym = false; // &123 page
   FocusNode get _firstKey => _nodes[0][0];
   EditableTextState? _target;
   FocusNode? _dismissedFor;
@@ -140,20 +141,11 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     node?.nextFocus();
   }
 
-  Widget _key(int r, int c, String label, VoidCallback onTap, {IconData? icon, bool strong = false}) {
+  Widget _key(int r, int c, String label, VoidCallback onTap, {IconData? icon, bool small = false, bool boxed = false}) {
     return Expanded(
       flex: _flex[r][c],
-      child: _KbKey(label: label, icon: icon, strong: strong, node: _nodes[r][c], onTap: onTap),
+      child: _KbKey(label: label, icon: icon, small: small, boxed: boxed, node: _nodes[r][c], onTap: onTap),
     );
-  }
-
-  List<Widget> _letters(int r, int from, String chars) {
-    final out = <Widget>[];
-    for (int i = 0; i < chars.length; i++) {
-      final ch = _caps ? chars[i].toUpperCase() : chars[i];
-      out.add(_key(r, from + i, ch, () => _type(ch)));
-    }
-    return out;
   }
 
   /// Arrow keys move over the keys by position (row / column), nothing else.
@@ -211,39 +203,43 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     return KeyEventResult.handled;
   }
 
+  static const List<String> _letterPage = ['abcdefg', 'hijklmn', 'opqrstu', "vwxyz-'"];
+  static const List<String> _symbolPage = ['1234567', '890./:@', '_=,?!&#', '()*%+-\''];
+
   Widget _panel() {
+    final page = _sym ? _symbolPage : _letterPage;
+    Widget typed(int r, int c) {
+      final raw = page[r][c];
+      final ch = (!_sym && _caps) ? raw.toUpperCase() : raw;
+      return _key(r, c, raw.toUpperCase(), () => _type(ch));
+    }
+
+    List<Widget> rowOf(int r, {Widget? last}) => [
+          for (int c = 0; c < page[r].length; c++) typed(r, c),
+          if (last != null) last,
+        ];
+
     return FocusScope(
       child: Focus(
         focusNode: _scope,
         onKeyEvent: _arrow,
         child: Material(
-          color: const Color(0xF2120E24),
+          color: const Color(0xF0101010),
           elevation: 16,
-          child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Row(children: _letters(0, 0, '1234567890')),
-                Row(children: _letters(1, 0, 'qwertyuiop')),
-                Row(children: [..._letters(2, 0, 'asdfghjkl'), _key(2, 9, '', _backspace, icon: Icons.backspace_outlined)]),
-                Row(children: [
-                  _key(3, 0, '', () => setState(() => _caps = !_caps), icon: _caps ? Icons.keyboard_capslock : Icons.arrow_upward),
-                  ..._letters(3, 1, 'zxcvbnm'),
-                  _key(3, 8, '.', () => _type('.')),
-                  _key(3, 9, '/', () => _type('/')),
-                ]),
-                Row(children: [
-                  _key(4, 0, ':', () => _type(':')),
-                  _key(4, 1, '-', () => _type('-')),
-                  _key(4, 2, '_', () => _type('_')),
-                  _key(4, 3, '@', () => _type('@')),
-                  _key(4, 4, 'Space', () => _type(' ')),
-                  _key(4, 5, 'Clear', _clear),
-                  _key(4, 6, 'Done', _done, strong: true),
-                ]),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: rowOf(0, last: _key(0, 7, '', _backspace, icon: Icons.backspace_outlined))),
+              Row(children: rowOf(1, last: _key(1, 7, _sym ? 'ABC' : '&123', () => setState(() => _sym = !_sym), small: true))),
+              Row(children: rowOf(2, last: _key(2, 7, '', () => setState(() => _caps = !_caps), icon: _caps ? Icons.keyboard_capslock : Icons.arrow_upward))),
+              Row(children: rowOf(3)),
+              const SizedBox(height: 4),
+              Row(children: [
+                _key(4, 0, 'SPACE', () => _type(' '), small: true, boxed: true),
+                _key(4, 1, 'CLEAR', _clear, small: true, boxed: true),
+                _key(4, 2, 'SEARCH', _done, small: true, boxed: true),
               ]),
-            ),
+            ]),
           ),
         ),
       ),
@@ -258,23 +254,23 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
       Positioned.fill(child: widget.child),
       if (_isTv && _visible)
         Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 520), child: ClipRRect(borderRadius: const BorderRadius.vertical(top: Radius.circular(14)), child: _panel()))),
+          right: 24,
+          top: 76,
+          width: 420,
+          child: ClipRRect(borderRadius: BorderRadius.circular(14), child: _panel()),
         ),
     ]);
   }
 }
 
-/// One compact key: a thin white ring shows where the remote is.
+/// One key: plain letter, white rounded square where the remote is.
 class _KbKey extends StatefulWidget {
   final String label;
   final IconData? icon;
-  final bool strong;
+  final bool small, boxed;
   final FocusNode? node;
   final VoidCallback onTap;
-  const _KbKey({Key? key, required this.label, this.icon, this.strong = false, this.node, required this.onTap}) : super(key: key);
+  const _KbKey({Key? key, required this.label, this.icon, this.small = false, this.boxed = false, this.node, required this.onTap}) : super(key: key);
 
   @override
   State<_KbKey> createState() => _KbKeyState();
@@ -285,24 +281,24 @@ class _KbKeyState extends State<_KbKey> {
 
   @override
   Widget build(BuildContext context) {
-    final primary = Theme.of(context).colorScheme.primary;
+    final fg = _f ? Colors.black : Colors.white;
     return Padding(
-      padding: const EdgeInsets.all(1.5),
+      padding: const EdgeInsets.all(2),
       child: InkWell(
         focusNode: widget.node,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(8),
         onTap: widget.onTap,
         onFocusChange: (v) => setState(() => _f = v),
         child: Container(
-          height: 30,
+          height: 38,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: _f ? Colors.white : (widget.strong ? primary : Colors.white12),
-            borderRadius: BorderRadius.circular(6),
+            color: _f ? Colors.white : (widget.boxed ? Colors.white12 : Colors.transparent),
+            borderRadius: BorderRadius.circular(8),
           ),
           child: widget.icon != null
-              ? Icon(widget.icon, size: 16, color: _f ? Colors.black : Colors.white)
-              : Text(widget.label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: _f ? Colors.black : Colors.white)),
+              ? Icon(widget.icon, size: 20, color: fg)
+              : Text(widget.label, style: TextStyle(fontSize: widget.small ? 14 : 20, fontWeight: FontWeight.w600, color: fg)),
         ),
       ),
     );

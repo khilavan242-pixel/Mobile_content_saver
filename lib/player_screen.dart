@@ -193,7 +193,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         _go(_index - 1);
         break;
       case 'close':
-        PlayerHost.instance.closeAndQuit();
+        // Notification X: with TubeBox open only the player closes; from outside it closes the app.
+        if (_app == AppLifecycleState.resumed) {
+          PlayerHost.instance.close();
+        } else {
+          PlayerHost.instance.closeAndQuit();
+        }
         break;
     }
   }
@@ -2058,7 +2063,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         Positioned(
           top: 0,
           right: 0,
-          child: _miniBtn(Icons.close, host.closeAndQuit),
+          child: _miniBtn(Icons.close, host.close),
         ),
         Positioned(
           top: 0,
@@ -2122,7 +2127,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             ),
             IconButton(tooltip: _playing ? 'Pause' : 'Play', onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
             if (_hasNext) IconButton(tooltip: 'Next', onPressed: () => _go(_index + 1), icon: const Icon(Icons.skip_next)),
-            IconButton(tooltip: 'Close', onPressed: PlayerHost.instance.closeAndQuit, icon: const Icon(Icons.close)),
+            IconButton(tooltip: 'Close', onPressed: PlayerHost.instance.close, icon: const Icon(Icons.close)),
           ]),
           Positioned(
             left: 0,

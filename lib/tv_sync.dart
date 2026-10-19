@@ -156,6 +156,28 @@ class TvReceiver {
         return await _reply(req, 200, {'files': list});
       }
 
+      // Manage from the phone: read one file, delete files.
+      if (path == '/file' && req.method == 'GET') {
+        final safe = YtStore.safeName(req.uri.queryParameters['name'] ?? '');
+        final f = File('$folder/$safe.m3u');
+        if (safe.isEmpty || !await f.exists()) return await _reply(req, 404, {'error': 'No such file'});
+        return await _reply(req, 200, {'name': safe, 'text': await f.readAsString()});
+      }
+      if (path == '/delete' && req.method == 'POST') {
+        final j = jsonDecode(await utf8.decoder.bind(req).join()) as Map<String, dynamic>;
+        int n = 0;
+        for (final raw in (j['names'] as List)) {
+          final safe = YtStore.safeName('$raw'.replaceAll(RegExp(r'\.m3u$', caseSensitive: false), ''));
+          final f = File('$folder/$safe.m3u');
+          if (safe.isNotEmpty && await f.exists()) {
+            await f.delete();
+            n++;
+          }
+        }
+        _addLog('Phone deleted $n file(s)');
+        return await _reply(req, 200, {'deleted': n});
+      }
+
       if (path == '/upload' && req.method == 'POST') {
         final raw = req.uri.queryParameters['name'] ?? '';
         final safe = YtStore.safeName(raw);
@@ -250,6 +272,57 @@ class TvClient {
       onProgress?.call(done, ips.length);
     }
     return found;
+  }
+
+  static Future<Map<String, dynamic>?> _getJson(String ip, String pin, String path) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final req = await client.getUrl(Uri.parse('http://$ip:$kTvPort$path'));
+      req.headers.set('x-pin', pin);
+      final res = await req.close().timeout(const Duration(seconds: 10));
+      final body = await res.transform(utf8.decoder).join();
+      if (res.statusCode != 200) return null;
+      return jsonDecode(body) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// The .m3u files on the TV, or null when the TV cannot be reached.
+  static Future<List<({String name, int size})>?> listFiles(String ip, String pin) async {
+    final j = await _getJson(ip, pin, '/files');
+    if (j == null) return null;
+    return [
+      for (final e in (j['files'] as List)) (name: (e as Map)['name'] as String, size: ((e['size'] as num?) ?? 0).toInt()),
+    ];
+  }
+
+  static Future<String?> readFile(String ip, String pin, String fileName) async {
+    final base = fileName.replaceAll(RegExp(r'\.m3u$', caseSensitive: false), '');
+    final j = await _getJson(ip, pin, '/file?name=${Uri.encodeQueryComponent(base)}');
+    return j?['text'] as String?;
+  }
+
+  /// Returns null on success, otherwise a readable error.
+  static Future<String?> deleteFiles(String ip, String pin, List<String> names) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final req = await client.postUrl(Uri.parse('http://$ip:$kTvPort/delete'));
+      req.headers.set('x-pin', pin);
+      req.headers.contentType = ContentType.json;
+      final body = utf8.encode(jsonEncode({'names': names}));
+      req.contentLength = body.length;
+      req.add(body);
+      final res = await req.close().timeout(const Duration(seconds: 10));
+      await res.drain();
+      return res.statusCode == 200 ? null : 'TV answered ${res.statusCode}';
+    } catch (_) {
+      return 'Cannot reach the TV';
+    } finally {
+      client.close(force: true);
+    }
   }
 
   /// Cast: ask the TV to play [items] from [index]. Returns null on success.

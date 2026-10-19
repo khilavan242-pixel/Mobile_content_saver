@@ -12,6 +12,7 @@ import 'media.dart';
 import 'm3u_store.dart';
 import 'player_host.dart';
 import 'tv_keyboard.dart';
+import 'tv_manage.dart';
 import 'tv_sync.dart';
 
 const Color kAccent = Color(0xFF8B5CF6); // violet, matches the app icon
@@ -598,6 +599,16 @@ class _HomeShellState extends State<HomeShell> {
           onTap: () {
             Navigator.pop(c);
             widget.onChangeFolder();
+          },
+        ),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.tv),
+          title: const Text('Manage TV content'),
+          subtitle: const Text('Delete files or videos on your TV'),
+          onTap: () {
+            Navigator.pop(c);
+            Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const TvManageScreen()));
           },
         ),
         if (_index != 1)
