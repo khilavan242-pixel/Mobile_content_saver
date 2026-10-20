@@ -520,7 +520,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         }
         setState(() => _playing = false);
         // A new video often reports "paused" while it loads: keep the screen clean.
-        if (DateTime.now().difference(_lastGo) > const Duration(seconds: 6)) _showControls();
+        if (DateTime.now().difference(_lastGo) > const Duration(seconds: 6) && DateTime.now().isAfter(_quietUntil)) _showControls();
         _syncPipAuto();
       } else if (st == 0) {
         _onEnded();
@@ -586,7 +586,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     _syncPipAuto();
   }
 
-  void _togglePlay() {
+  DateTime _quietUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// [quiet]: pause / play without opening the player buttons (OK on the TV remote).
+  void _togglePlay({bool quiet = false}) {
+    if (quiet) _quietUntil = DateTime.now().add(const Duration(seconds: 3));
     if (_playing) {
       _js('player.pauseVideo()');
     } else {
@@ -594,7 +598,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     }
     setState(() => _playing = !_playing);
     _wantPlay = _playing;
-    _showControls();
+    if (!quiet) _showControls();
     _syncPipAuto();
   }
 
@@ -834,6 +838,11 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         }
         if (k == LogicalKeyboardKey.arrowLeft) {
           _seekBy(-kSkipBack, showUi: false);
+          return KeyEventResult.handled;
+        }
+        // OK / centre button: only play or pause, the buttons stay hidden.
+        if (k == LogicalKeyboardKey.select || k == LogicalKeyboardKey.enter || k == LogicalKeyboardKey.numpadEnter || k == LogicalKeyboardKey.gameButtonA) {
+          _togglePlay(quiet: true);
           return KeyEventResult.handled;
         }
         // Shorts: Down = next short, Up = previous short (like swiping).
