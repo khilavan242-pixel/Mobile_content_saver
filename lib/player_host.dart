@@ -19,6 +19,8 @@ class PlayerHost extends ChangeNotifier {
 
   List<YtItem> queue = const [];
   int start = 0;
+  /// Seconds to start the first video at ("Continue watching").
+  double startAt = 0;
   int session = 0;
   bool active = false;
   bool minimized = false;
@@ -59,11 +61,12 @@ class PlayerHost extends ChangeNotifier {
   /// Set by the open player: handles the Back key, returns true when used.
   bool Function()? backHandler;
 
-  void open(List<YtItem> q, int index) {
+  void open(List<YtItem> q, int index, {double startAt = 0}) {
     // Remember what had the remote focus so it can come back when the player closes (TV).
     if (!active) _returnFocus = FocusManager.instance.primaryFocus;
     queue = List<YtItem>.from(q);
     start = index;
+    this.startAt = startAt;
     active = true;
     minimized = false;
     session++;
@@ -177,6 +180,7 @@ class _PlayerOverlayState extends State<_PlayerOverlay> {
               key: ValueKey(host.session),
               queue: host.queue,
               startIndex: host.start,
+              startAt: host.startAt,
               minimized: host.minimized && !host.inPip,
               inPip: host.inPip,
             );

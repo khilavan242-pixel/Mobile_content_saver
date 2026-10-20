@@ -14,6 +14,7 @@ import 'tv_sync.dart';
 import 'pip.dart';
 import 'player_host.dart';
 import 'tv_focus.dart';
+import 'watch_history.dart';
 import 'youtube_core.dart';
 
 /// YouTube asks apps to identify themselves with a Referer made from the app id.
@@ -29,11 +30,13 @@ const int kSkipFwd = 30;
 class PlayerScreen extends StatefulWidget {
   final List<YtItem> queue;
   final int startIndex;
+  /// Seconds to start the first video at.
+  final double startAt;
   /// Shown as the little bar at the bottom while you browse (like YouTube).
   final bool minimized;
   /// Shown inside the floating window (Picture-in-Picture).
   final bool inPip;
-  const PlayerScreen({Key? key, required this.queue, this.startIndex = 0, this.minimized = false, this.inPip = false}) : super(key: key);
+  const PlayerScreen({Key? key, required this.queue, this.startIndex = 0, this.startAt = 0, this.minimized = false, this.inPip = false}) : super(key: key);
 
   @override
   _PlayerScreenState createState() => _PlayerScreenState();
@@ -77,6 +80,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   int _mode = 0; // 0 = player A, 1 = player B (privacy host)
   late int _index;
+  late double _resumeAt = widget.startAt;
   bool _ready = false;
   bool _playing = true;
   bool _full = false;
@@ -250,6 +254,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   @override
   void dispose() {
+    WatchHistory.instance.flush();
     _keepAlive?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     Media.release(_onMediaCmd);
@@ -407,6 +412,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String _html(YtItem first) {
     final vars = first.isPlaylist ? "listType:'playlist',list:'${first.id}'," : '';
     final vid = first.isPlaylist ? '' : "videoId:'${first.id}',";
+    final startVar = (!first.isPlaylist && _resumeAt > 0 && first.id == widget.queue[widget.startIndex].id) ? 'start:${_resumeAt.floor()}, ' : '';
     return '''
 <!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
@@ -419,7 +425,7 @@ function post(m){ try{ Tube.postMessage(m); }catch(e){} }
 function onYouTubeIframeAPIReady(){
   player = new YT.Player('p',{
     width:'100%', height:'100%', host:'$_host', $vid
-    playerVars:{ $vars autoplay:1, controls:0, disablekb:1, playsinline:1, rel:0, fs:0, modestbranding:1, iv_load_policy:3, origin:'$kAppReferer' },
+    playerVars:{ $vars $startVar autoplay:1, controls:0, disablekb:1, playsinline:1, rel:0, fs:0, modestbranding:1, iv_load_policy:3, origin:'$kAppReferer' },
     events:{
       onReady:function(){ post('ready'); },
       onStateChange:function(e){ post('state:'+e.data); },
@@ -463,6 +469,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         final c = double.tryParse(p[1]) ?? 0;
         final d = double.tryParse(p[2]) ?? 0;
         if (!_seeking) _pos.value = c.isNaN ? 0 : c;
+        if (_playing && c > 0 && _index < widget.queue.length) WatchHistory.instance.update(_current, c, d);
         _dur.value = d.isNaN ? 0 : d;
         // Timeline in the notification (only while it matters).
         if ((_audio || _app != AppLifecycleState.resumed) && DateTime.now().difference(_lastProgress) > const Duration(seconds: 2)) {
@@ -571,6 +578,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         if (mounted && _controlsVisible) _playNode.requestFocus();
       });
     }
+    _resumeAt = 0;
     final it = widget.queue[i];
     _wantPlay = true;
     _js(it.isPlaylist ? "loadPlaylist('${it.id}')" : "loadVideo('${it.id}')");

@@ -13,6 +13,7 @@ import 'player_host.dart';
 import 'tv_focus.dart';
 import 'tv_keyboard.dart';
 import 'voice_search.dart';
+import 'watch_history.dart';
 import 'tv_sync.dart';
 import 'youtube_core.dart';
 
@@ -56,6 +57,8 @@ class M3uFilesScreen extends StatefulWidget {
   final List<Widget> Function(BuildContext sheetContext)? menuExtras;
   /// TV: width taken by the collapsed side menu on the left.
   final double railInset;
+  /// TV: lets the app's Back key ask this screen first (returns true when it handled Back).
+  final void Function(bool Function()? handler)? registerBack;
   const M3uFilesScreen({
     Key? key,
     required this.basePath,
@@ -66,6 +69,7 @@ class M3uFilesScreen extends StatefulWidget {
     this.menuRequest,
     this.menuExtras,
     this.railInset = 0,
+    this.registerBack,
   }) : super(key: key);
 
   @override
@@ -81,6 +85,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   _Scope _scope = _Scope.current;
   final Set<String> _customPaths = {};
   final Map<String, List<YtItem>> _data = {};
+  final Map<String, List<YtItem>> _railData = {};
   final Set<String> _selected = {};
 
   String _query = '';
@@ -107,7 +112,28 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     widget.addRequest?.addListener(_onAddRequest);
     widget.menuRequest?.addListener(_onMenuRequest);
     TvKeyboardHost.visibleNotifier.addListener(_onKbVisible);
+    WatchHistory.instance.load();
+    WatchHistory.instance.addListener(_onHistory);
+    widget.registerBack?.call(_handleBack);
     _init();
+  }
+
+  /// TV: Back inside one file's full page returns to the home shelves.
+  bool _handleBack() {
+    if (!mounted || !_ready || !_isTv) return false;
+    if (_selected.isNotEmpty) {
+      setState(_selected.clear);
+      return true;
+    }
+    if (_scope != _Scope.all) {
+      _setScope(_Scope.all);
+      return true;
+    }
+    return false;
+  }
+
+  void _onHistory() {
+    if (mounted && _ready) setState(() {});
   }
 
   void _onMenuRequest() {
@@ -190,10 +216,15 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     widget.searchRequest?.removeListener(_onSearchRequest);
     widget.addRequest?.removeListener(_onAddRequest);
     TvKeyboardHost.visibleNotifier.removeListener(_onKbVisible);
+    WatchHistory.instance.removeListener(_onHistory);
     _hintTimer?.cancel();
     _autoTimer?.cancel();
     widget.menuRequest?.removeListener(_onMenuRequest);
+    widget.registerBack?.call(null);
     _searchFocus.dispose();
+    for (final n in _shelfNodes.values) {
+      n.dispose();
+    }
     WidgetsBinding.instance.removeObserver(this);
     _searchCtrl.dispose();
     super.dispose();
@@ -287,6 +318,14 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     _data
       ..clear()
       ..addAll(fresh);
+    // Every file is needed for the "New for you" row, whatever is shown below.
+    final all = <String, List<YtItem>>{};
+    for (final f in _files) {
+      all[f.path] = fresh[f.path] ?? await _store.load(f);
+    }
+    _railData
+      ..clear()
+      ..addAll(all);
     final ids = _data.entries.expand((e) => e.value.map((i) => '${e.key}|${i.key}')).toSet();
     _selected.removeWhere((k) => !ids.contains(k));
     if (_group != null && !_groups().contains(_group)) _group = null;
@@ -1307,57 +1346,207 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     PlayerHost.instance.open(queue, start);
   }
 
-  /// TV home: a shelf (horizontal row) per .m3u file with a "See all" tile that
-  /// opens the whole file as a full page grid.
+  // TV shelves: the remote walks Up/Down shelf by shelf (title, then its videos), never skipping to the file tabs.
+  final Map<String, FocusNode> _shelfNodes = {};
+  final Map<int, int> _shelfLast = {};
+
+  FocusNode _sNode(String key) => _shelfNodes.putIfAbsent(key, () => FocusNode(debugLabel: key));
+
+  void _focusShow(FocusNode? n) {
+    if (n == null || n.context == null) return;
+    n.requestFocus();
+    Scrollable.ensureVisible(n.context!, duration: const Duration(milliseconds: 180), alignment: 0.3);
+  }
+
+  /// Video of shelf [i] to land on: the one last used, else the first.
+  FocusNode? _shelfCard(int i) {
+    final n = _shelfNodes['c$i#${_shelfLast[i] ?? 0}'];
+    return (n != null && n.context != null) ? n : _shelfNodes['c$i#0'];
+  }
+
+  // ---- home rails: "Continue watching" and "New for you"
+  List<WatchRec> _continueRecs() {
+    final ids = _railData.values.expand((l) => l).where((i) => i.isVideo).map((i) => i.id).toSet();
+    // Keep only videos that are still in one of the files.
+    return [for (final r in WatchHistory.instance.items) if (ids.contains(r.id)) r].take(12).toList();
+  }
+
+  /// Newest videos you have not watched yet: the end of every file (new links are added there), mixed.
+  List<YtItem> _newForYou(Set<String> skip) {
+    final seen = WatchHistory.instance.seen;
+    final lists = <List<YtItem>>[];
+    for (final f in _files) {
+      final l = (_railData[f.path] ?? const <YtItem>[]).where((i) => i.isVideo && i.status == 'working' && !seen.contains(i.id) && !skip.contains(i.id)).toList();
+      if (l.isNotEmpty) lists.add(l.reversed.toList());
+    }
+    final out = <YtItem>[];
+    final ids = <String>{};
+    for (int round = 0; out.length < 15; round++) {
+      var any = false;
+      for (final l in lists) {
+        if (round < l.length) {
+          any = true;
+          if (ids.add(l[round].id)) out.add(l[round]);
+        }
+      }
+      if (!any) break;
+    }
+    return out.take(15).toList();
+  }
+
+  Widget _railCard(List<YtItem> queue, int i, {WatchRec? rec, FocusNode? node, ValueChanged<bool>? onFocus}) {
+    final item = queue[i];
+    final title = item.title.isEmpty || item.title.startsWith('YouTube ') ? (rec?.title ?? 'YouTube video') : item.plainTitle;
+    return TvFocusable(
+      focusNode: node,
+      onFocus: onFocus,
+      onTap: () => PlayerHost.instance.open(queue, i, startAt: rec?.pos ?? 0),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: Stack(fit: StackFit.expand, children: [
+              Image.network(item.thumbUrl, fit: BoxFit.cover, errorBuilder: (c, e, s) => Container(color: const Color(0xFF2A2250))),
+              if (rec != null)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: LinearProgressIndicator(value: rec.fraction, minHeight: 4, backgroundColor: Colors.black54, color: Colors.redAccent),
+                ),
+            ]),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 8, left: 2),
+          child: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, height: 1.25)),
+        ),
+      ]),
+    );
+  }
+
+  /// The two rails as (title, queue, records) - empty when there is nothing to show.
+  List<({String title, List<YtItem> queue, List<WatchRec>? recs})> _rails() {
+    final cont = _continueRecs();
+    final fresh = _newForYou(cont.map((r) => r.id).toSet());
+    return [
+      if (cont.isNotEmpty) (title: 'Continue watching', queue: [for (final r in cont) r.toItem()], recs: cont),
+      if (fresh.isNotEmpty) (title: 'New for you', queue: fresh, recs: null),
+    ];
+  }
+
+  /// Phone home: the same two rails above the grid.
+  Widget _phoneRails() {
+    final rails = _rails();
+    if (rails.isEmpty) return const SliverToBoxAdapter(child: SizedBox.shrink());
+    const cardW = 190.0;
+    return SliverToBoxAdapter(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        for (final r in rails) ...[
+          Padding(padding: const EdgeInsets.fromLTRB(16, 10, 16, 6), child: Text(r.title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+          SizedBox(
+            height: cardW * 9 / 16 + 62,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              itemCount: r.queue.length,
+              itemBuilder: (context, i) => SizedBox(
+                width: cardW,
+                child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: _railCard(r.queue, i, rec: r.recs?[i])),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 6),
+      ]),
+    );
+  }
+
+  /// TV home: "Continue watching", "New for you", then a shelf (horizontal row) per .m3u file; a file's
+  /// title opens the whole file as a full page.
   Widget _tvShelves() {
     const cardW = 300.0;
     final shelves = <Widget>[];
-    for (final f in _files) {
-      final items = _data[f.path] ?? const <YtItem>[];
-      if (items.isEmpty) continue;
+    final rails = _rails();
+    final withItems = [for (final f in _files) if ((_data[f.path] ?? const <YtItem>[]).isNotEmpty) f];
+    final total = rails.length + withItems.length;
+    for (int si = 0; si < total; si++) {
+      final isRail = si < rails.length;
+      final rail = isRail ? rails[si] : null;
+      final f = isRail ? null : withItems[si - rails.length];
+      final items = isRail ? const <YtItem>[] : (_data[f!.path] ?? const <YtItem>[]);
       final shown = items.take(12).toList();
+      final count = isRail ? rail!.queue.length : shown.length;
+      final head = _sNode('h$si');
       shelves.add(Padding(
         padding: const EdgeInsets.only(bottom: 18),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-            child: Row(children: [
-              Expanded(child: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700))),
-              Text('${items.length} videos', style: const TextStyle(color: Colors.white54, fontSize: 14)),
-            ]),
+          Focus(
+            skipTraversal: true,
+            canRequestFocus: false,
+            onKeyEvent: (n, e) {
+              if (e is! KeyDownEvent) return KeyEventResult.ignored;
+              if (e.logicalKey == LogicalKeyboardKey.arrowDown) {
+                _focusShow(_shelfCard(si));
+                return KeyEventResult.handled;
+              }
+              if (e.logicalKey == LogicalKeyboardKey.arrowUp && si > 0) {
+                _focusShow(_shelfCard(si - 1));
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: TvFocusable(
+                focusNode: head,
+                radius: 10,
+                onTap: isRail ? () {} : () => _switchTo(f!),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Row(children: [
+                    Expanded(child: Text(isRail ? rail!.title : f!.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700))),
+                    if (!isRail) Text('${items.length} videos', style: const TextStyle(color: Colors.white54, fontSize: 14)),
+                    if (!isRail) const SizedBox(width: 6),
+                    if (!isRail) const Icon(Icons.chevron_right, color: Colors.white54),
+                  ]),
+                ),
+              ),
+            ),
           ),
-          SizedBox(
-            height: cardW * 9 / 16 + 78,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              itemCount: shown.length + 1,
-              itemBuilder: (context, i) {
-                if (i == shown.length) {
-                  return SizedBox(
-                    width: 190,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
-                      child: TvFocusable(
-                        radius: 14,
-                        onTap: () => _switchTo(f),
-                        child: AspectRatio(
-                          aspectRatio: 16 / 9,
-                          child: Container(
-                            decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(12)),
-                            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                              const Icon(Icons.grid_view_rounded, size: 34),
-                              const SizedBox(height: 8),
-                              Text('See all ${items.length}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                            ]),
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }
-                return SizedBox(width: cardW, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6), child: _card(Entry(f, shown[i]), compact: true)));
-              },
+          Focus(
+            skipTraversal: true,
+            canRequestFocus: false,
+            onKeyEvent: (n, e) {
+              if (e is! KeyDownEvent) return KeyEventResult.ignored;
+              if (e.logicalKey == LogicalKeyboardKey.arrowUp) {
+                _focusShow(head);
+                return KeyEventResult.handled;
+              }
+              if (e.logicalKey == LogicalKeyboardKey.arrowDown) {
+                if (si + 1 < total) _focusShow(_sNode('h${si + 1}'));
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: SizedBox(
+              height: cardW * 9 / 16 + 78,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                itemCount: count,
+                itemBuilder: (context, i) {
+                  final Widget card = isRail
+                      ? _railCard(rail!.queue, i, rec: rail.recs?[i], node: _sNode('c$si#$i'), onFocus: (v) {
+                          if (v) _shelfLast[si] = i;
+                        })
+                      : _card(Entry(f!, shown[i]), compact: true, node: _sNode('c$si#$i'), onFocus: (v) {
+                          if (v) _shelfLast[si] = i;
+                        });
+                  return SizedBox(width: cardW, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6), child: card));
+                },
+              ),
             ),
           ),
         ]),
@@ -1369,10 +1558,12 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _card(Entry e, {required bool compact}) {
+  Widget _card(Entry e, {required bool compact, FocusNode? node, ValueChanged<bool>? onFocus}) {
     final item = e.item;
     final showFile = _scope != _Scope.current;
     return TvFocusable(
+      focusNode: node,
+      onFocus: onFocus,
       onTap: () => _tap(e),
       onLongPress: () => setState(() => _selected.add(e.id)),
       child: Column(
@@ -1495,7 +1686,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       return Focus(
         onKeyEvent: (n, e) {
           if (e is KeyDownEvent && (e.logicalKey == LogicalKeyboardKey.browserSearch || e.logicalKey == LogicalKeyboardKey.launchAssistant)) {
-            _openSearch(listen: true);
+            _startTvSearch();
             return KeyEventResult.handled;
           }
           return KeyEventResult.ignored;
@@ -1521,7 +1712,6 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                     setState(() => _query = '');
                   },
                 ),
-              IconButton(tooltip: 'Voice search', icon: const Icon(Icons.mic), onPressed: () => _openSearch(listen: true)),
             ]),
           ),
         ),
@@ -1539,7 +1729,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
           hintText: _scope == _Scope.current ? 'Search in ${_active?.name ?? ''}.m3u' : 'Search ${_scopeFiles.length} files',
           prefixIcon: const Icon(Icons.search),
           suffixIcon: _query.isEmpty
-              ? IconButton(tooltip: 'Voice search', icon: const Icon(Icons.mic_none), onPressed: () => _openSearch(listen: true))
+              ? (_isTv ? null : IconButton(tooltip: 'Voice search', icon: const Icon(Icons.mic_none), onPressed: () => _openSearch(listen: true)))
               : IconButton(
                   icon: const Icon(Icons.close),
                   onPressed: () {
@@ -1872,9 +2062,12 @@ PopupMenuButton<String>(
                 onRefresh: _refresh,
                 edgeOffset: 60,
                 child: CustomScrollView(
+                  // TV: keep the rows above/below built so the remote can walk through them one by one.
+                  cacheExtent: _isTv ? 6000 : null,
                   physics: const AlwaysScrollableScrollPhysics(),
                   slivers: [
                     selecting ? _selectionBar(visible) : _normalBar(),
+                    if (!_isTv && plainView && !selecting) _phoneRails(),
                     _infoHeader(visible.length),
                     content,
                   ],
