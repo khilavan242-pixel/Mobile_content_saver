@@ -378,6 +378,8 @@ class _HomeShellState extends State<HomeShell> {
   final ValueNotifier<int> _addRequest = ValueNotifier<int>(0);
   final ValueNotifier<int> _menuRequest = ValueNotifier<int>(0);
   final ValueNotifier<int> _searchRequest = ValueNotifier<int>(0);
+  final ValueNotifier<int> _shortsRequest = ValueNotifier<int>(0);
+  final ValueNotifier<int> _filesRequest = ValueNotifier<int>(0);
   // TV side menu buttons: 0 search, 1 home, 2 TV sync, 3 folder.
   final List<FocusNode> _railNodes = List.generate(4, (i) => FocusNode(debugLabel: 'rail-$i'));
   bool _asking = false;
@@ -394,6 +396,8 @@ class _HomeShellState extends State<HomeShell> {
     _addRequest.dispose();
     _menuRequest.dispose();
     _searchRequest.dispose();
+    _shortsRequest.dispose();
+    _filesRequest.dispose();
     for (final n in _railNodes) {
       n.dispose();
     }
@@ -420,6 +424,8 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   /// Back: other tab -> first tab, first tab -> "Exit TubeBox?" question.
+  bool Function()? _filesBack;
+
   Future<void> _onBack() async {
     // An open player takes Back first (closes its menu or shrinks to the mini bar).
     if (PlayerHost.instance.handleBack()) return;
@@ -427,6 +433,7 @@ class _HomeShellState extends State<HomeShell> {
       _go(0);
       return;
     }
+    if (_filesBack?.call() == true) return;
     if (_asking) return;
     _asking = true;
     final yes = await showDialog<bool>(
@@ -453,8 +460,11 @@ class _HomeShellState extends State<HomeShell> {
         searchRequest: _searchRequest,
         addRequest: _addRequest,
         menuRequest: _menuRequest,
+        shortsRequest: _shortsRequest,
+        filesRequest: _filesRequest,
         menuExtras: _menuExtras,
         railInset: tv ? _kRailWidth : 0,
+        registerBack: (h) => _filesBack = h,
       ),
       TvSyncScreen(basePath: widget.basePath, onChangeFolder: widget.onChangeFolder),
     ];
@@ -551,7 +561,7 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  /// YouTube-like bottom bar: Home, Search, big +, TV, Menu (bottom right).
+  /// YouTube-like bottom bar: Home, Shorts, big +, Files (Subscriptions), You (menu, TV Sync, folder).
   Widget _phoneBar() {
     return Material(
       color: kBg,
@@ -561,9 +571,9 @@ class _HomeShellState extends State<HomeShell> {
           height: 64,
           child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
           _barItem(Icons.home_outlined, Icons.home, 'Home', _index == 0, () => _go(0)),
-          _barItem(Icons.search, Icons.search, 'Search', false, () {
+          _barItem(Icons.slow_motion_video_outlined, Icons.slow_motion_video, 'Shorts', false, () {
             _go(0);
-            _searchRequest.value++;
+            _shortsRequest.value++;
           }),
           Expanded(
             child: Center(
@@ -581,8 +591,29 @@ class _HomeShellState extends State<HomeShell> {
               ),
             ),
           ),
-          _barItem(Icons.cast_connected_outlined, Icons.cast_connected, 'TV', _index == 1, () => _go(1)),
-          _barItem(Icons.menu, Icons.menu, 'Menu', false, _openMenu),
+          _barItem(Icons.subscriptions_outlined, Icons.subscriptions, 'Files', false, () {
+            _go(0);
+            _filesRequest.value++;
+          }),
+          Expanded(
+            child: InkWell(
+              onTap: _openMenu,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8, bottom: 6),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Container(
+                    width: 26,
+                    height: 26,
+                    alignment: Alignment.center,
+                    decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
+                    child: const Text('T', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Colors.white)),
+                  ),
+                  const SizedBox(height: 3),
+                  const Text('You', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w500)),
+                ]),
+              ),
+            ),
+          ),
         ]),
         ),
       ),

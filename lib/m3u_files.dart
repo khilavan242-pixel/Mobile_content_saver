@@ -53,6 +53,9 @@ class M3uFilesScreen extends StatefulWidget {
   final ValueNotifier<int>? addRequest;
   /// Phone: the bottom bar's Menu asks for the file actions (the old three-dot menu) through this.
   final ValueNotifier<int>? menuRequest;
+  /// Phone: bottom bar "Shorts" and "Files" (like YouTube's Shorts / Subscriptions).
+  final ValueNotifier<int>? shortsRequest;
+  final ValueNotifier<int>? filesRequest;
   /// Phone: extra rows (change folder, TV, exit) shown below the file actions in that menu.
   final List<Widget> Function(BuildContext sheetContext)? menuExtras;
   /// TV: width taken by the collapsed side menu on the left.
@@ -67,6 +70,8 @@ class M3uFilesScreen extends StatefulWidget {
     this.searchRequest,
     this.addRequest,
     this.menuRequest,
+    this.shortsRequest,
+    this.filesRequest,
     this.menuExtras,
     this.railInset = 0,
     this.registerBack,
@@ -111,6 +116,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     widget.searchRequest?.addListener(_onSearchRequest);
     widget.addRequest?.addListener(_onAddRequest);
     widget.menuRequest?.addListener(_onMenuRequest);
+    widget.shortsRequest?.addListener(_onShortsRequest);
+    widget.filesRequest?.addListener(_onFilesRequest);
     TvKeyboardHost.visibleNotifier.addListener(_onKbVisible);
     WatchHistory.instance.load();
     WatchHistory.instance.addListener(_onHistory);
@@ -134,6 +141,57 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
 
   void _onHistory() {
     if (mounted && _ready) setState(() {});
+  }
+
+  /// Bottom bar "Shorts": every short video (title mentions "short") of all files.
+  Future<void> _onShortsRequest() async {
+    if (!mounted || !_ready) return;
+    await _setScope(_Scope.all);
+    if (!mounted) return;
+    _searchCtrl.text = 'short';
+    setState(() {
+      _query = 'short';
+      _phoneSearching = true;
+    });
+  }
+
+  /// Bottom bar "Files" (like Subscriptions): pick one .m3u file or all of them.
+  Future<void> _onFilesRequest() async {
+    if (!mounted || !_ready) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: const Color(0xFF1B1633),
+      builder: (c) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+          child: ListView(shrinkWrap: true, children: [
+            const Padding(padding: EdgeInsets.fromLTRB(20, 0, 20, 8), child: Text('Your files', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+            ListTile(
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('All files'),
+              selected: _scope == _Scope.all,
+              onTap: () {
+                Navigator.pop(c);
+                _setScope(_Scope.all);
+              },
+            ),
+            for (final f in _files)
+              ListTile(
+                leading: const Icon(Icons.subscriptions_outlined),
+                title: Text(f.name),
+                subtitle: Text('${(_railData[f.path] ?? const <YtItem>[]).length} items'),
+                selected: _scope == _Scope.current && _active?.path == f.path,
+                onTap: () {
+                  Navigator.pop(c);
+                  _switchTo(f);
+                },
+              ),
+          ]),
+        ),
+      ),
+    );
   }
 
   void _onMenuRequest() {
@@ -220,6 +278,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     _hintTimer?.cancel();
     _autoTimer?.cancel();
     widget.menuRequest?.removeListener(_onMenuRequest);
+    widget.shortsRequest?.removeListener(_onShortsRequest);
+    widget.filesRequest?.removeListener(_onFilesRequest);
     widget.registerBack?.call(null);
     _searchFocus.dispose();
     for (final n in _shelfNodes.values) {

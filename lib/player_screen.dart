@@ -43,7 +43,7 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
-  static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+  static const List<double> _speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
   late final WebViewController _web;
   final FocusNode _root = FocusNode(debugLabel: 'player-root');
@@ -977,16 +977,20 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
                     : null),
           ),
         ),
-        // Paused / finished: hide YouTube's own "more videos" suggestions.
-        if (_ready && (!_playing || _ended))
+        // Finished: cover YouTube's own "more videos" suggestions. A plain pause keeps the picture clear.
+        if (_ready && _ended)
           Positioned.fill(
             child: IgnorePointer(
               child: ColoredBox(
-                color: Colors.black.withOpacity(_ended ? 1.0 : (_wide ? 0.82 : 0.6)),
-                child: Center(
-                  child: (_wide || _ended || _shortUi) ? Icon(_ended ? Icons.replay : Icons.play_circle_outline, size: 72, color: Colors.white70) : null,
-                ),
+                color: Colors.black,
+                child: const Center(child: Icon(Icons.replay, size: 72, color: Colors.white70)),
               ),
+            ),
+          ),
+        if (_ready && !_playing && !_ended && _wide && !_controlsVisible)
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: Center(child: Icon(Icons.play_circle_outline, size: 72, color: Colors.white, shadows: [Shadow(blurRadius: 12, color: Colors.black87)])),
             ),
           ),
         // Phone: YouTube-app style buttons on the video itself.
@@ -1171,6 +1175,14 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
         child: Row(children: [
           IconButton(tooltip: 'Cast to TV', onPressed: _cast, icon: const Icon(Icons.cast, color: Colors.white)),
           _autoPill(),
+          TextButton(
+            onPressed: () {
+              _openSettings();
+              setState(() => _settingsPage = 'speed');
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.white, minimumSize: const Size(40, 40), padding: const EdgeInsets.symmetric(horizontal: 8)),
+            child: Text(_speedLabel(_speed), style: const TextStyle(fontWeight: FontWeight.w700)),
+          ),
           IconButton(
             tooltip: 'Captions',
             onPressed: _toggleCaptions,
@@ -1267,7 +1279,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
       title = 'Playback speed';
       rows = [
         for (final v in _speeds)
-          _settingsRow(Icons.speed, v == 1.0 ? 'Normal' : '${v}x', autofocus: v == _speed, selected: v == _speed, trailing: v == _speed ? const Icon(Icons.check) : const SizedBox.shrink(), onTap: () {
+          _settingsRow(Icons.speed, v == 1.0 ? 'Normal' : '${_speedLabel(v)}', autofocus: v == _speed, selected: v == _speed, trailing: v == _speed ? const Icon(Icons.check) : const SizedBox.shrink(), onTap: () {
             setState(() {
               _speed = v;
               _settingsPage = 'main';
