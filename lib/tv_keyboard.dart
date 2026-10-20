@@ -87,6 +87,10 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
           _visible = true;
         });
         TvKeyboardHost.visibleNotifier.value = true;
+        // Dialogs slide in: place the keyboard again once they have settled.
+        Future<void>.delayed(const Duration(milliseconds: 350), () {
+          if (mounted && _visible) setState(() {});
+        });
       }
       // Hand the remote over to the keys.
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -246,19 +250,104 @@ class _TvKeyboardHostState extends State<TvKeyboardHost> {
     );
   }
 
+  static const double _kbW = 420, _kbH = 236;
+
+  /// The area the keyboard must not cover: the box being typed in, and when it sits in a
+  /// dialog the whole dialog card (so its buttons stay reachable).
+  Rect? _avoidRect() {
+    final ctx = _target?.context;
+    if (ctx == null || !ctx.mounted) return null;
+    RenderBox? card;
+    ctx.visitAncestorElements((e) {
+      if (e.widget is Dialog) return false;
+      if (e.widget is Material) {
+        final ro = e.renderObject;
+        if (ro is RenderBox && ro.hasSize && ro.attached) card = ro;
+      }
+      return true;
+    });
+    // `card` is the outermost Material below the Dialog (the dialog card), or the
+    // outermost Material of the page - only use it when a Dialog really is above.
+    var inDialog = false;
+    ctx.visitAncestorElements((e) {
+      if (e.widget is Dialog) {
+        inDialog = true;
+        return false;
+      }
+      return true;
+    });
+    final field = ctx.findRenderObject();
+    RenderBox? box = inDialog ? card : null;
+    if (box == null && field is RenderBox) box = field;
+    if (box == null || !box.hasSize || !box.attached) return null;
+    return (box.localToGlobal(Offset.zero) & box.size).inflate(6);
+  }
+
+  /// Puts the keyboard where it hides nothing: beside the box, else below, else above.
+  /// If no free place is big enough the keyboard shrinks to fit.
+  Widget _placed(Size size) {
+    final safe = Rect.fromLTWH(8, 8, size.width - 16, size.height - 16);
+    final avoid = _avoidRect();
+    double fit(Rect r) => r.width <= 0 || r.height <= 0 ? 0 : [1.0, r.width / _kbW, r.height / _kbH].reduce((a, b) => a < b ? a : b);
+    Rect left = safe, top = safe;
+    double scale = 1;
+    if (avoid != null) {
+      final regions = <String, Rect>{
+        'right': Rect.fromLTRB(avoid.right + 8, safe.top, safe.right, safe.bottom),
+        'left': Rect.fromLTRB(safe.left, safe.top, avoid.left - 8, safe.bottom),
+        'below': Rect.fromLTRB(safe.left, avoid.bottom + 8, safe.right, safe.bottom),
+        'above': Rect.fromLTRB(safe.left, safe.top, safe.right, avoid.top - 8),
+      };
+      String best = 'below';
+      double bestS = -1;
+      for (final e in regions.entries) {
+        final f = fit(e.value);
+        if (f > bestS + 0.001) {
+          bestS = f;
+          best = e.key;
+        }
+      }
+      scale = bestS.clamp(0.5, 1.0).toDouble();
+      final r = regions[best]!;
+      final w = _kbW * scale, h = _kbH * scale;
+      switch (best) {
+        case 'right':
+          left = Rect.fromLTWH(r.left, (avoid.center.dy - h / 2).clamp(safe.top, safe.bottom - h).toDouble(), 0, 0);
+          break;
+        case 'left':
+          left = Rect.fromLTWH(r.right - w, (avoid.center.dy - h / 2).clamp(safe.top, safe.bottom - h).toDouble(), 0, 0);
+          break;
+        case 'below':
+          left = Rect.fromLTWH((avoid.left).clamp(safe.left, safe.right - w).toDouble(), r.top, 0, 0);
+          break;
+        default:
+          left = Rect.fromLTWH((avoid.left).clamp(safe.left, safe.right - w).toDouble(), r.bottom - h, 0, 0);
+      }
+      top = left;
+    } else {
+      scale = fit(Rect.fromLTRB(safe.right - _kbW, 76, safe.right, safe.bottom));
+      left = Rect.fromLTWH(safe.right - _kbW * scale, 76, 0, 0);
+    }
+    return Positioned(
+      left: left.left,
+      top: top.top,
+      width: _kbW * scale,
+      height: _kbH * scale,
+      child: FittedBox(
+        fit: BoxFit.contain,
+        alignment: Alignment.topLeft,
+        child: SizedBox(width: _kbW, child: ClipRRect(borderRadius: BorderRadius.circular(14), child: _panel())),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     _isTv = size.width >= 900 && size.width > size.height;
     return Stack(children: [
       Positioned.fill(child: widget.child),
-      if (_isTv && _visible)
-        Positioned(
-          right: 24,
-          top: 76,
-          width: 420,
-          child: ClipRRect(borderRadius: BorderRadius.circular(14), child: _panel()),
-        ),
+      if (_isTv && _visible) _placed(size),
     ]);
   }
 }
