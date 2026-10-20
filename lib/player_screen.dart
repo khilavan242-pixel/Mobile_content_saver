@@ -13,6 +13,7 @@ import 'media.dart';
 import 'tv_sync.dart';
 import 'pip.dart';
 import 'player_host.dart';
+import 'prefs.dart';
 import 'tv_focus.dart';
 import 'watch_history.dart';
 import 'youtube_core.dart';
@@ -115,6 +116,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       platform.setMediaPlaybackRequiresUserGesture(false);
     }
     _load();
+    _loadShuffle();
     // Keep the screen awake while a video is open (like the YouTube app).
     try {
       WakelockPlus.enable();
@@ -632,6 +634,106 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
     setState(() => _speed = _speeds[(i + 1) % _speeds.length]);
     _js('player.setPlaybackRate($_speed)');
     _flashText('Speed ${_speedLabel(_speed)}');
+  }
+
+  // ---- Shuffle: off -> True (Fisher-Yates) -> Smart (no back-to-back of one series) -> Discovery (adds unseen videos)
+  int _shuffle = 0;
+  List<YtItem>? _origQueue;
+  final Set<YtItem> _discovered = Set<YtItem>.identity();
+  final math.Random _rnd = math.Random();
+  static const List<String> _shuffleNames = ['Shuffle off', 'Shuffle: True random', 'Shuffle: Smart (no repeats of a series back-to-back)', 'Shuffle: Discovery (mixes in new videos)'];
+
+  IconData get _shuffleIcon => const [Icons.shuffle, Icons.shuffle_on, Icons.auto_awesome, Icons.explore][_shuffle];
+
+  Future<void> _loadShuffle() async {
+    try {
+      final m = (await SharedPreferences.getInstance()).getInt('tb_shuffle') ?? 0;
+      if (m > 0 && mounted && _shuffle == 0) _applyShuffle(m, announce: false);
+    } catch (_) {}
+  }
+
+  String _seriesKey(YtItem it) {
+    if (it.group.isNotEmpty) return it.group.toLowerCase();
+    final words = it.plainTitle.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\u0900-\u097f ]'), ' ').split(RegExp(r'\s+')).where((w) => w.isNotEmpty && !RegExp(r'^\d+$').hasMatch(w)).take(2);
+    return words.join(' ');
+  }
+
+  /// Random order where no two neighbours share a series (when that is possible).
+  List<YtItem> _smartOrder(List<YtItem> items, String firstAvoid) {
+    final pool = List<YtItem>.from(items)..shuffle(_rnd);
+    final out = <YtItem>[];
+    var last = firstAvoid;
+    while (pool.isNotEmpty) {
+      var k = pool.indexWhere((x) => _seriesKey(x) != last);
+      if (k < 0) k = 0;
+      final pick = pool.removeAt(k);
+      out.add(pick);
+      last = _seriesKey(pick);
+    }
+    return out;
+  }
+
+  void _cycleShuffle() => _applyShuffle((_shuffle + 1) % 4);
+
+  void _applyShuffle(int mode, {bool announce = true}) {
+    final q = widget.queue;
+    if (q.isEmpty) return;
+    _origQueue ??= List<YtItem>.from(q);
+    final cur = q[_index];
+    final newQ = <YtItem>[];
+    if (mode == 0) {
+      final present = Set<YtItem>.identity()..addAll(q);
+      newQ.addAll(_origQueue!.where((x) => present.contains(x) && !_discovered.contains(x)));
+      if (!newQ.contains(cur)) newQ.insert(0, cur);
+      _discovered.clear();
+      _origQueue = null;
+    } else {
+      final rest = [for (final x in q) if (!identical(x, cur) && !_discovered.contains(x)) x];
+      _discovered.clear();
+      if (mode == 1) {
+        rest.shuffle(_rnd);
+        newQ..add(cur)..addAll(rest);
+      } else {
+        final ordered = _smartOrder(rest, _seriesKey(cur));
+        if (mode == 3) {
+          // Discovery: related first (same series as something here), then any unseen video of the library.
+          final have = Set<String>.from(q.map((x) => x.id));
+          final keys = q.map(_seriesKey).toSet();
+          final seen = WatchHistory.instance.seen;
+          final cands = [for (final x in PlayerHost.instance.pool) if (x.isVideo && !have.contains(x.id) && !seen.contains(x.id)) x]..shuffle(_rnd);
+          final related = [for (final x in cands) if (keys.contains(_seriesKey(x))) x];
+          final others = [for (final x in cands) if (!keys.contains(_seriesKey(x))) x];
+          final take = math.min(cands.length, math.max(3, ordered.length ~/ 3)).clamp(0, 10).toInt();
+          final extra = [...related, ...others].take(take).toList();
+          _discovered.addAll(extra);
+          var at = 2;
+          for (final x in extra) {
+            ordered.insert(math.min(at, ordered.length), x);
+            at += 4;
+          }
+        }
+        newQ..add(cur)..addAll(ordered);
+      }
+    }
+    setState(() {
+      _shuffle = mode;
+      q
+        ..clear()
+        ..addAll(newQ);
+      _index = q.indexWhere((x) => identical(x, cur)).clamp(0, q.length - 1).toInt();
+    });
+    _syncPipAuto();
+    SharedPreferences.getInstance().then((p) => p.setInt('tb_shuffle', mode));
+    if (announce) _flashText(_shuffleNames[mode]);
+  }
+
+  Widget _shuffleBtn({bool tonal = true, bool white = false}) {
+    final on = _shuffle != 0;
+    final primary = Theme.of(context).colorScheme.primary;
+    final icon = Icon(_shuffleIcon, color: on ? primary : (white ? Colors.white : null));
+    return tonal
+        ? IconButton.filledTonal(tooltip: _shuffleNames[_shuffle], onPressed: _cycleShuffle, icon: icon)
+        : IconButton(tooltip: _shuffleNames[_shuffle], onPressed: _cycleShuffle, icon: icon);
   }
 
   void _cycleRepeat() {
@@ -1213,6 +1315,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             ),
           ),
           const Spacer(),
+          _shuffleBtn(tonal: false, white: true),
           if (_full)
             IconButton(
               tooltip: _fill ? 'Original size' : 'Zoom to fill',
@@ -1298,6 +1401,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           onTap: () => setState(() => _repeat = _repeat == 2 ? 0 : 2),
           trailing: Icon(_repeat == 2 ? Icons.check_box : Icons.check_box_outline_blank),
         ),
+        _settingsRow(_shuffleIcon, 'Shuffle', value: const ['Off', 'True', 'Smart', 'Discovery'][_shuffle], onTap: _cycleShuffle),
         _settingsRow(
           Icons.skip_next_outlined,
           'Play next automatically',
@@ -1377,6 +1481,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
             onPressed: _cycleRepeat,
             icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? null : Theme.of(context).colorScheme.primary),
           ),
+          _shuffleBtn(),
           IconButton.filledTonal(
             tooltip: 'Captions',
             onPressed: _toggleCaptions,
@@ -1459,6 +1564,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
                       onPressed: _cycleRepeat,
                       icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? null : primary),
                     ),
+                    _shuffleBtn(),
                     FilledButton.tonalIcon(onPressed: _cycleSpeed, icon: const Icon(Icons.speed), label: Text(_speedLabel(_speed))),
                   ]),
                 ),
@@ -1963,6 +2069,7 @@ function loadPlaylist(id){ player.loadPlaylist({listType:'playlist', list:id}); 
           Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _seekBar()),
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             IconButton(tooltip: 'Repeat', iconSize: 24, onPressed: _cycleRepeat, icon: Icon(_repeat == 2 ? Icons.repeat_one : Icons.repeat, color: _repeat == 0 ? Colors.white70 : primary)),
+            IconButton(tooltip: _shuffleNames[_shuffle], iconSize: 24, onPressed: _cycleShuffle, icon: Icon(_shuffleIcon, color: _shuffle == 0 ? Colors.white70 : primary)),
             IconButton(tooltip: 'Previous', iconSize: 38, onPressed: _index > 0 ? () => _go(_index - 1) : null, icon: const Icon(Icons.skip_previous)),
             IconButton.filled(tooltip: _playing ? 'Pause' : 'Play', iconSize: 40, onPressed: _ended ? _replay : _togglePlay, icon: Icon(_ended ? Icons.replay : (_playing ? Icons.pause : Icons.play_arrow))),
             IconButton(tooltip: 'Next', iconSize: 38, onPressed: _hasNext ? () => _go(_index + 1) : null, icon: const Icon(Icons.skip_next)),

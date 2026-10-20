@@ -18,6 +18,8 @@ class PlayerHost extends ChangeNotifier {
   }
 
   List<YtItem> queue = const [];
+  /// Every video of the library: the pool "Discovery" shuffle mixes new videos in from.
+  List<YtItem> pool = const [];
   int start = 0;
   /// Seconds to start the first video at ("Continue watching").
   double startAt = 0;

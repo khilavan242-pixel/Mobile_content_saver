@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -97,7 +98,24 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   String _type = 'all'; // all | video | playlist
   String _status = 'all'; // all | working | unavailable | kodi_error
   String? _group;
-  String _sort = 'file'; // file | newest | title | titleDesc | chapter
+  String _sort = 'suggested'; // suggested | file | newest | title | titleDesc | chapter
+  int _suggestSeed = math.Random().nextInt(1 << 30);
+  Set<String> _seenSnap = <String>{};
+
+  /// New order of the "suggested" list: what you have not watched first, mixed up again every time the app
+  /// opens or you switch files.
+  void _reseed() {
+    _suggestSeed = math.Random().nextInt(1 << 30);
+    _seenSnap = Set<String>.from(WatchHistory.instance.seen);
+  }
+
+  int _suggestKey(YtItem it) => (_seenSnap.contains(it.id) ? 1 << 40 : 0) + (Object.hash(_suggestSeed, it.key) & 0xFFFFFFF);
+
+  List<YtItem> _suggested(List<YtItem> items) {
+    final l = List<YtItem>.from(items);
+    l.sort((a, b) => _suggestKey(a).compareTo(_suggestKey(b)));
+    return l;
+  }
   final Set<String> _features = <String>{}; // titled | untitled | dupes
 
   bool _ready = false;
@@ -218,10 +236,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         child: ConstrainedBox(
           constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
           child: ListView(shrinkWrap: true, children: [
-            tile(_grid ? Icons.view_agenda_outlined : Icons.grid_view, _grid ? 'Switch to big cards' : 'Switch to grid', _toggleGrid),
             tile(Icons.edit_note, 'Edit .m3u as text (full page)', _openEditor),
-            tile(Icons.fact_check_outlined, 'Check which videos play', () => _checkAvailability(_visible())),
-            tile(Icons.cast_connected, 'Send this file to my TV', _sendToTv),
             tile(Icons.select_all, 'Select all', () => setState(() => _selected.addAll(_visible().map((e) => e.id)))),
             tile(Icons.copy, 'Copy links', () => _copyLinks(_visible().map((e) => e.item))),
             tile(Icons.playlist_add_check, 'Expand playlists / fetch titles', () {
@@ -332,6 +347,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
 
   Future<void> _init() async {
     try {
+      await WatchHistory.instance.load();
+      _reseed();
       final prefs = await SharedPreferences.getInstance();
       _grid = prefs.getBool('m3u_grid') ?? true;
       var files = await _store.listFiles();
@@ -386,6 +403,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     _railData
       ..clear()
       ..addAll(all);
+    PlayerHost.instance.pool = [for (final l in all.values) ...l.where((i) => i.isVideo)];
     final ids = _data.entries.expand((e) => e.value.map((i) => '${e.key}|${i.key}')).toSet();
     _selected.removeWhere((k) => !ids.contains(k));
     if (_group != null && !_groups().contains(_group)) _group = null;
@@ -440,6 +458,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   }
 
   Future<void> _switchTo(M3uFile f) async {
+    _reseed();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('m3u_active_file', f.path);
     _active = f;
@@ -459,6 +478,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   }
 
   Future<void> _setScope(_Scope s, {Set<String>? custom}) async {
+    _reseed();
     _scope = s;
     if (custom != null) {
       final copy = Set<String>.from(custom); // `custom` may be _customPaths itself
@@ -1117,7 +1137,9 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
         out.add(Entry(f, it));
       }
     }
-    if (_sort == 'newest') {
+    if (_sort == 'suggested') {
+      out.sort((a, b) => _suggestKey(a.item).compareTo(_suggestKey(b.item)));
+    } else if (_sort == 'newest') {
       out.setAll(0, out.reversed.toList());
     } else if (_sort == 'title') {
       out.sort((a, b) => a.item.plainTitle.toLowerCase().compareTo(b.item.plainTitle.toLowerCase()));
@@ -1143,14 +1165,14 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     return n;
   }
 
-  bool get _filtersActive => _type != 'all' || _status != 'all' || _group != null || _scope != _Scope.current || _sort != 'file' || _features.isNotEmpty;
+  bool get _filtersActive => _type != 'all' || _status != 'all' || _group != null || _scope != _Scope.current || _sort != 'suggested' || _features.isNotEmpty;
 
   void _resetFilters() {
     setState(() {
       _type = 'all';
       _status = 'all';
       _group = null;
-      _sort = 'file';
+      _sort = 'suggested';
       _features.clear();
     });
   }
@@ -1208,6 +1230,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                   if (groups.isNotEmpty) row('Category', group, [('*', 'Any'), for (final g in groups) (g, g)], (v) => group = v),
                   row('Status', status, [('all', 'Any'), ('working', 'Plays fine'), ('unavailable', 'Unavailable ($_unavailableCount)')], (v) => status = v),
                   row('Sort by', sort, const [
+                    ('suggested', 'Suggested for you'),
                     ('file', 'Saved order'),
                     ('newest', 'Newest first'),
                     ('title', 'Title A to Z'),
@@ -1228,7 +1251,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
                 onPressed: () => setS(() {
                   type = 'all';
                   status = 'all';
-                  sort = 'file';
+                  sort = 'suggested';
                   group = '*';
                   feats.clear();
                   file = _active?.path ?? '*all';
@@ -1486,41 +1509,12 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
     );
   }
 
-  /// The two rails as (title, queue, records) - empty when there is nothing to show.
+  /// The TV rail (Continue watching) as (title, queue, records) - empty when there is nothing to show.
   List<({String title, List<YtItem> queue, List<WatchRec>? recs})> _rails() {
     final cont = _continueRecs();
-    final fresh = _newForYou(cont.map((r) => r.id).toSet());
     return [
       if (cont.isNotEmpty) (title: 'Continue watching', queue: [for (final r in cont) r.toItem()], recs: cont),
-      if (fresh.isNotEmpty) (title: 'New for you', queue: fresh, recs: null),
     ];
-  }
-
-  /// Phone home: the same two rails above the grid.
-  Widget _phoneRails() {
-    final rails = _rails();
-    if (rails.isEmpty) return const SliverToBoxAdapter(child: SizedBox.shrink());
-    const cardW = 190.0;
-    return SliverToBoxAdapter(
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        for (final r in rails) ...[
-          Padding(padding: const EdgeInsets.fromLTRB(16, 10, 16, 6), child: Text(r.title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
-          SizedBox(
-            height: cardW * 9 / 16 + 62,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              itemCount: r.queue.length,
-              itemBuilder: (context, i) => SizedBox(
-                width: cardW,
-                child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: _railCard(r.queue, i, rec: r.recs?[i])),
-              ),
-            ),
-          ),
-        ],
-        const SizedBox(height: 6),
-      ]),
-    );
   }
 
   /// TV home: "Continue watching", "New for you", then a shelf (horizontal row) per .m3u file; a file's
@@ -1536,7 +1530,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
       final rail = isRail ? rails[si] : null;
       final f = isRail ? null : withItems[si - rails.length];
       final items = isRail ? const <YtItem>[] : (_data[f!.path] ?? const <YtItem>[]);
-      final shown = items.take(12).toList();
+      final shown = (_sort == 'suggested' ? _suggested(items) : items).take(12).toList();
       final count = isRail ? rail!.queue.length : shown.length;
       final head = _sNode('h$si');
       shelves.add(Padding(
@@ -1675,7 +1669,7 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
   /// plus every active filter as a removable chip. Everything else lives in the
   /// filter popup (top-right button).
   Widget _contextRow() {
-    const sortNames = {'newest': 'Newest first', 'title': 'Title A–Z', 'titleDesc': 'Title Z–A', 'chapter': 'Category & chapter'};
+    const sortNames = {'file': 'Saved order', 'newest': 'Newest first', 'title': 'Title A–Z', 'titleDesc': 'Title Z–A', 'chapter': 'Category & chapter'};
     Widget pill(Widget c) => Padding(padding: const EdgeInsets.only(right: 8), child: c);
     // YouTube-style chip: the chosen one is white with dark text.
     Widget yt(String label, bool sel, VoidCallback tap) => pill(ChoiceChip(
@@ -1715,8 +1709,8 @@ class _M3uFilesScreenState extends State<M3uFilesScreen> with WidgetsBindingObse
               onPressed: _showFilterSheet,
               onDeleted: () => setState(() => _status = 'all'),
             )),
-          if (_sort != 'file')
-            pill(InputChip(label: Text(sortNames[_sort] ?? _sort), onPressed: _showFilterSheet, onDeleted: () => setState(() => _sort = 'file'))),
+          if (_sort != 'suggested')
+            pill(InputChip(label: Text(sortNames[_sort] ?? _sort), onPressed: _showFilterSheet, onDeleted: () => setState(() => _sort = 'suggested'))),
         ],
       ),
     );
@@ -1897,10 +1891,7 @@ PopupMenuButton<String>(
             }
           },
           itemBuilder: (c) => [
-            PopupMenuItem(value: 'view', child: Text(_grid ? 'Switch to big cards' : 'Switch to grid')),
             const PopupMenuItem(value: 'edit', child: Text('Edit .m3u as text (full page)')),
-            const PopupMenuItem(value: 'check', child: Text('Check which videos play')),
-            const PopupMenuItem(value: 'tv', child: Text('Send this file to my TV')),
             const PopupMenuItem(value: 'select', child: Text('Select all')),
             const PopupMenuItem(value: 'copy', child: Text('Copy links')),
             const PopupMenuItem(value: 'expand', child: Text('Expand playlists / fetch titles')),
@@ -2059,13 +2050,13 @@ PopupMenuButton<String>(
     final cols = fullWidth >= 900 ? 3 : 2;
     final cellW = (width - pad * 2 - gap * (cols - 1)) / cols;
 
-    final plainView = _type == 'all' && _status == 'all' && _group == null && _sort == 'file' && _features.isEmpty && _query.trim().isEmpty;
+    final plainView = _type == 'all' && _status == 'all' && _group == null && _sort == 'suggested' && _features.isEmpty && _query.trim().isEmpty;
     Widget content;
     if (visible.isEmpty) {
       content = _emptyState();
     } else if (_isTv && _scope == _Scope.all && plainView) {
       content = _tvShelves();
-    } else if (_grid) {
+    } else if (_isTv) {
       content = SliverPadding(
         padding: const EdgeInsets.fromLTRB(pad, 4, pad, 96),
         sliver: SliverGrid(
@@ -2127,7 +2118,6 @@ PopupMenuButton<String>(
                   physics: const AlwaysScrollableScrollPhysics(),
                   slivers: [
                     selecting ? _selectionBar(visible) : _normalBar(),
-                    if (!_isTv && plainView && !selecting) _phoneRails(),
                     _infoHeader(visible.length),
                     content,
                   ],
